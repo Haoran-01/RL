@@ -10,8 +10,8 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/rl_navigation/launch', ['launch/start_env.launch.py']),
-        ('share/rl_navigation/worlds', ['worlds/env_with_start_and_end.world'])
+        ('share/rl_navigation/launch', ['launch/start_env.launch.py', 'launch/test_env.launch.py']),
+        ('share/rl_navigation/worlds', ['worlds/2_env.world'])
     ],
     install_requires=['setuptools'],
     zip_safe=True,
