@@ -21,9 +21,9 @@ class GazeboEnvironment(Node):
         self.position = None
         self.orientation = None
         self.min_distance = float('inf')
-        self.goal = (3.0, 0.0)  # 终点坐标
+        self.goal = (0.0, 0.0)  # 终点坐标
         self.prev_distance = None
-        self.max_steps = 3500
+        self.max_steps = 500
         self.step_count = 0
 
         # Gazebo service client
@@ -60,49 +60,6 @@ class GazeboEnvironment(Node):
         dy = self.goal[1] - self.position.y
         return math.hypot(dx, dy)
 
-    # def reset(self):
-    #     self.get_logger().info('Resetting simulation...')
-    #     while not self.reset_client.wait_for_service(timeout_sec=1.0):
-    #         self.get_logger().info('Waiting for /reset_simulation service...')
-    #     req = Empty.Request()
-    #     future = self.reset_client.call_async(req)
-    #     rclpy.spin_until_future_complete(self, future)
-
-    #     self.get_logger().info('Setting robot to fixed start position...')
-    #     while not self.set_state_client.wait_for_service(timeout_sec=1.0):
-    #         self.get_logger().info('Waiting for /gazebo/set_entity_state service...')
-    #     state = EntityState()
-    #     state.name = 'turtlebot3_burger'
-    #     state.pose.position.x = -3.0
-    #     state.pose.position.y = 0.0
-    #     state.pose.position.z = 0.01
-    #     yaw = 0.0
-    #     state.pose.orientation.z = math.sin(yaw / 2)
-    #     state.pose.orientation.w = math.cos(yaw / 2)
-
-    #     req_state = SetEntityState.Request()
-    #     req_state.state = state
-    #     future = self.set_state_client.call_async(req_state)
-    #     rclpy.spin_until_future_complete(self, future)
-
-    #     self.prev_distance = None
-    #     self.step_count = 0
-    #     time.sleep(1.0)  # Wait for Gazebo to stabilize
-
-    #     return self.get_observation()
-
-
-    # def reset(self):
-    #     # Reset Gazebo world
-    #     self.get_logger().info('Resetting the Gazebo world...')
-    #     while not self.reset_client.wait_for_service(timeout_sec=1.0):
-    #         self.get_logger().info('Waiting for /reset_world service...')
-    #     req = Empty.Request()
-    #     future = self.reset_client.call_async(req)
-    #     rclpy.spin_until_future_complete(self, future)
-    #     self.get_logger().info('World reset completed.')
-
-
     def reset(self):
         # Reset Gazebo world
         self.get_logger().info('Resetting the Gazebo world...')
@@ -124,7 +81,7 @@ class GazeboEnvironment(Node):
         return self.get_observation()
 
 
-    def base_step(self, linear, angular, duration=0.8):
+    def base_step(self, linear, angular, duration=0.7):
         cmd = Twist()
         cmd.linear.x = linear
         cmd.angular.z = angular
@@ -132,30 +89,88 @@ class GazeboEnvironment(Node):
         rclpy.spin_once(self, timeout_sec=duration)
         self.vel_pub.publish(Twist())  # Stop after action
 
-    def compute_reward(self):
-        current_distance = self.compute_distance_to_goal()
+    # def compute_reward(self):
+    #     current_distance = self.compute_distance_to_goal()
       
-        # self.get_logger().info(f"Distance to goal: {current_distance:.2f}, Min laser: {self.min_distance:.2f}")
+    #     # self.get_logger().info(f"Distance to goal: {current_distance:.2f}, Min laser: {self.min_distance:.2f}")
 
+
+    #     if self.prev_distance is None:
+    #         self.prev_distance = current_distance
+    #     distance_diff = self.prev_distance - current_distance
+    #     reward = distance_diff * 10.0 # Scale
+
+    #     # 到达终点
+    #     if current_distance < 0.3:
+    #         reward += 100.0
+    #         done = True
+    #         self.get_logger().info(f"reach the end")
+    #     # 碰撞
+    #     elif self.min_distance < 0.2:
+    #         reward -= 100.0
+    #         done = True
+    #         self.get_logger().info(f"crush")
+    #     # 超时
+    #     elif self.step_count >= self.max_steps:
+    #         reward -= 50.0
+    #         done = True
+    #         self.get_logger().info(f"overtime")
+    #     else:
+    #         done = False
+
+    #     self.prev_distance = current_distance
+    #     return reward, done
+
+
+    def compute_reward(self, action):
+        current_distance = self.compute_distance_to_goal()
 
         if self.prev_distance is None:
             self.prev_distance = current_distance
         distance_diff = self.prev_distance - current_distance
-        reward = distance_diff * 10.0  # Scale
 
-        # 到达终点
+        # # 朝向目标方向奖励
+        # dx = self.goal[0] - self.position.x
+        # dy = self.goal[1] - self.position.y
+        # heading_to_goal = math.atan2(dy, dx)
+        # angle_diff = abs(self.orientation - heading_to_goal)
+        # angle_diff = min(angle_diff, 2 * math.pi - angle_diff)
+        # angle_reward = (math.pi - angle_diff) / math.pi
+
+        dx = self.goal[0] - self.position.x
+        dy = self.goal[1] - self.position.y
+        goal_angle = math.atan2(dy, dx)
+        heading_error = goal_angle - self.orientation
+        heading_error = (heading_error + math.pi) % (2 * math.pi) - math.pi  # wrap to [-π, π]
+
+        angle_reward = -abs(heading_error)
+    
+
+        # 基础奖励：接近目标 + 朝向目标
+        reward = distance_diff * 10.0 + angle_reward
+
+        # 靠近障碍物惩罚
+        if self.min_distance < 0.5:
+            reward -= (0.5 - self.min_distance) * 2
+
+        # 原地旋转惩罚
+        if action in [1, 2]:
+            reward -= 0.02
+
+        # 时间惩罚
+        reward -= 0.05
+
+        # 终止状态奖励
         if current_distance < 0.3:
-            reward += 100.0
+            reward += 30.0
             done = True
             self.get_logger().info(f"reach the end")
-        # 碰撞
         elif self.min_distance < 0.2:
-            reward -= 100.0
+            reward -= 30.0
             done = True
             self.get_logger().info(f"crush")
-        # 超时
         elif self.step_count >= self.max_steps:
-            reward -= 50.0
+            reward -= 10.0
             done = True
             self.get_logger().info(f"overtime")
         else:
@@ -163,6 +178,7 @@ class GazeboEnvironment(Node):
 
         self.prev_distance = current_distance
         return reward, done
+
 
     def is_violation(self):
         return self.min_distance < 0.2
@@ -172,14 +188,14 @@ class NoMonitoringEnv(GazeboEnvironment):
     def step(self, action):
         """Discrete action: 0=forward, 1=left, 2=right"""
         if action == 0:
-            self.base_step(0.8, 0.0)
+            self.base_step(0.25, 0.0)
         elif action == 1:
             self.base_step(0.0, 0.5)
         elif action == 2:
             self.base_step(0.0, -0.5)
 
         self.step_count += 1
-        reward, done = self.compute_reward()
+        reward, done = self.compute_reward(action)
         obs = self.get_observation()
         return obs, reward, done, {}
 

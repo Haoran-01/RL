@@ -3,11 +3,19 @@ from rl_navigation.environment import NoMonitoringEnv
 from rl_navigation.ddqn_agent import DDQNAgent
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
+import os
 
-def train_ddqn(episodes=100, max_steps=3500):
+def train_ddqn(episodes=500, max_steps=500):
     rclpy.init()
     env = NoMonitoringEnv()
     agent = DDQNAgent(state_dim=13, action_dim=3)  # 3 pos+orientation + 10 laser beams
+
+    # 如果有旧模型，加载
+    if os.path.exists("ddqn_model_v3.pth"):
+        agent.load("ddqn_model_v3.pth")
+        agent.epsilon = 0.4  # 可选，手动调整起始探索率
+
 
     for episode in range(episodes):
         obs = env.reset()
@@ -32,9 +40,21 @@ def train_ddqn(episodes=100, max_steps=3500):
         agent.update_target()
         print(f"Episode {episode+1}/{episodes} | Total Reward: {total_reward:.2f} | Steps: {step+1}")
 
-    torch.save(agent.q_network.state_dict(), "ddqn_model.pth")
+    with open("loss_log_v3.txt", "w") as f:
+        for l in agent.loss_history:
+            f.write(f"{l}\n")
+
+    
+    plt.plot(agent.loss_history)
+    plt.xlabel("Training Steps")
+    plt.ylabel("Loss")
+    plt.title("Loss Curve")
+    plt.savefig("loss_curve_v4.png")
+
+    agent.save("ddqn_model_v4.pth")
+
     env.destroy_node()
     rclpy.shutdown()
 
 if __name__ == "__main__":
-    train_ddqn(max_steps=3500)
+    train_ddqn()
