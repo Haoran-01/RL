@@ -12,6 +12,129 @@
       <uri>model://sun</uri>
     </include>
 
+    <model name="wall1">
+      <static>true</static>
+      <pose>0 -1 0.5 0 0 0</pose>  <!-- x y z R P Y -->
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.1 4.0 1.0</size> <!-- 长 宽 高 -->
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.1 6.0 1.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0 0 1</ambient>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall2">
+      <static>true</static>
+      <pose>-4 0 0.5 0 0 0</pose>  <!-- x y z R P Y -->
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.1 8.0 1.0</size> <!-- 长 宽 高 -->
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.1 8.0 1.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0 0 1</ambient>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+
+    <model name="wall3">
+      <static>true</static>
+      <pose>4 0 0.5 0 0 0</pose>  <!-- x y z R P Y -->
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.1 8.0 1.0</size> <!-- 长 宽 高 -->
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.1 8.0 1.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0 0 1</ambient>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+
+    <model name="wall4">
+      <static>true</static>
+      <pose>0 4 0.5 0 0 1.5708</pose>  <!-- x y z R P Y -->
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.1 8.0 1.0</size> <!-- 长 宽 高 -->
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.1 8.0 1.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0 0 1</ambient>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+
+    <model name="wall5">
+      <static>true</static>
+      <pose> 0 -4 0.5 0 0 1.5708</pose>  <!-- x y z R P Y -->
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.1 8.0 1.0</size> <!-- 长 宽 高 -->
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.1 8.0 1.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0 0 1</ambient>
+          </material>
+        </visual>
+      </link>
+    </model>
+
     <!-- 起点 (绿色方块) -->
     <model name="start_point">
       <static>true</static>
@@ -29,7 +152,7 @@
         </visual>
         <pose>0 0 0.05 0 0 0</pose>
       </link>
-      <pose>-3 0 0 0 0 0</pose>
+      <pose> -3 0 0 0 0 0</pose>
     </model>
 
     <!-- 终点 (红色方块) -->

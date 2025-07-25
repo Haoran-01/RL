@@ -21,9 +21,9 @@ class GazeboEnvironment(Node):
         self.position = None
         self.orientation = None
         self.min_distance = float('inf')
-        self.goal = (0.0, 0.0)  # 终点坐标
+        self.goal = (3.0, 0.0)  # 终点坐标
         self.prev_distance = None
-        self.max_steps = 500
+        self.max_steps = 1000
         self.step_count = 0
 
         # Gazebo service client
@@ -60,6 +60,27 @@ class GazeboEnvironment(Node):
         dy = self.goal[1] - self.position.y
         return math.hypot(dx, dy)
 
+    # def reset(self):
+    #     # Reset Gazebo world
+    #     self.get_logger().info('Resetting the Gazebo world...')
+    #     while not self.reset_client.wait_for_service(timeout_sec=1.0):
+    #         self.get_logger().info('Waiting for /reset_world service...')
+    #     req = Empty.Request()
+    #     future = self.reset_client.call_async(req)
+    #     rclpy.spin_until_future_complete(self, future)
+    #     self.get_logger().info('World reset completed.')
+
+    #     # Wait for odom and scan to update
+    #     self.get_logger().info('Waiting for initial sensor data...')
+    #     while rclpy.ok() and (self.position is None or self.orientation is None or self.min_distance == float('inf')):
+    #         rclpy.spin_once(self, timeout_sec=0.1)
+    #     self.get_logger().info('Initial sensor data received.')
+
+
+    #     self.prev_distance = None
+    #     self.step_count = 0
+    #     return self.get_observation()
+
     def reset(self):
         # Reset Gazebo world
         self.get_logger().info('Resetting the Gazebo world...')
@@ -70,18 +91,29 @@ class GazeboEnvironment(Node):
         rclpy.spin_until_future_complete(self, future)
         self.get_logger().info('World reset completed.')
 
-        # Wait for odom and scan to update
+        # 🟡 强制清空所有状态（非常关键）
+        self.position = None
+        self.orientation = None
+        self.min_distance = float('inf')   # ✅ 没有这行可能导致刚开始就触发碰撞done
+        self.prev_distance = None
+        self.step_count = 0
+
+        # 🟢 等待新的传感器数据
         self.get_logger().info('Waiting for initial sensor data...')
         while rclpy.ok() and (self.position is None or self.orientation is None or self.min_distance == float('inf')):
             rclpy.spin_once(self, timeout_sec=0.1)
         self.get_logger().info('Initial sensor data received.')
 
-        self.prev_distance = None
-        self.step_count = 0
+        # 🔴 [可选] 检查是否初始就已到达终点，避免done立即触发
+        current_distance = self.compute_distance_to_goal()
+        if current_distance < 0.3:
+            self.get_logger().warn(f"Spawned too close to goal! Distance={current_distance:.2f}")
+
         return self.get_observation()
 
 
-    def base_step(self, linear, angular, duration=0.7):
+
+    def base_step(self, linear, angular, duration=1.0):
         cmd = Twist()
         cmd.linear.x = linear
         cmd.angular.z = angular
@@ -124,18 +156,12 @@ class GazeboEnvironment(Node):
 
     def compute_reward(self, action):
         current_distance = self.compute_distance_to_goal()
+        # self.get_logger().info(f"Distance to goal: {current_distance:.2f}")
+
 
         if self.prev_distance is None:
             self.prev_distance = current_distance
         distance_diff = self.prev_distance - current_distance
-
-        # # 朝向目标方向奖励
-        # dx = self.goal[0] - self.position.x
-        # dy = self.goal[1] - self.position.y
-        # heading_to_goal = math.atan2(dy, dx)
-        # angle_diff = abs(self.orientation - heading_to_goal)
-        # angle_diff = min(angle_diff, 2 * math.pi - angle_diff)
-        # angle_reward = (math.pi - angle_diff) / math.pi
 
         dx = self.goal[0] - self.position.x
         dy = self.goal[1] - self.position.y
@@ -188,7 +214,7 @@ class NoMonitoringEnv(GazeboEnvironment):
     def step(self, action):
         """Discrete action: 0=forward, 1=left, 2=right"""
         if action == 0:
-            self.base_step(0.25, 0.0)
+            self.base_step(0.4, 0.0)
         elif action == 1:
             self.base_step(0.0, 0.5)
         elif action == 2:

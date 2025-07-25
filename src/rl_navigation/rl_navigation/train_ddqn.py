@@ -6,20 +6,24 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
-def train_ddqn(episodes=500, max_steps=500):
+def train_ddqn(episodes=500, max_steps=1000):
     rclpy.init()
     env = NoMonitoringEnv()
     agent = DDQNAgent(state_dim=13, action_dim=3)  # 3 pos+orientation + 10 laser beams
 
     # 如果有旧模型，加载
-    if os.path.exists("ddqn_model_v3.pth"):
-        agent.load("ddqn_model_v3.pth")
-        agent.epsilon = 0.4  # 可选，手动调整起始探索率
+    if os.path.exists("ddqn_model_v4.pth"):
+        agent.load("ddqn_model_v4.pth")
+        agent.epsilon = 1.0  # 可选，手动调整起始探索率
 
 
     for episode in range(episodes):
         obs = env.reset()
         total_reward = 0
+
+        if agent.epsilon > agent.epsilon_min:
+            agent.epsilon *= agent.epsilon_decay
+
 
         for step in range(max_steps):
             if obs is None:
@@ -40,7 +44,7 @@ def train_ddqn(episodes=500, max_steps=500):
         agent.update_target()
         print(f"Episode {episode+1}/{episodes} | Total Reward: {total_reward:.2f} | Steps: {step+1}")
 
-    with open("loss_log_v3.txt", "w") as f:
+    with open("loss_log_v5.txt", "w") as f:
         for l in agent.loss_history:
             f.write(f"{l}\n")
 
@@ -49,9 +53,9 @@ def train_ddqn(episodes=500, max_steps=500):
     plt.xlabel("Training Steps")
     plt.ylabel("Loss")
     plt.title("Loss Curve")
-    plt.savefig("loss_curve_v4.png")
+    plt.savefig("loss_curve_v5.png")
 
-    agent.save("ddqn_model_v4.pth")
+    agent.save("ddqn_model_v5.pth")
 
     env.destroy_node()
     rclpy.shutdown()
