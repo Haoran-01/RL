@@ -11,65 +11,78 @@ from gazebo_msgs.msg import EntityState
 import numpy as np
 import math
 import time
-from collections import deque 
+from collections import deque
+
 
 class GazeboEnvironment(Node):
     def __init__(self, node_name='rl_env'):
         super().__init__(node_name)
+
+        # ------- ROS IO -------
         self.vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
 
+        # ------- State -------
         self.position = None
         self.orientation = None
-        
-        self.progress_win = deque(maxlen=20)    # 用于检测“卡住”（约0.2~0.5s窗口，随step频率而定）
-        self.last_action = None   # 0=前进,1=左,2=右
         self.min_distance = float('inf')
-        self.goal = (3.0, 0.0)  # 终点坐标
+        self.scan_state = np.array([3.5] * 10, dtype=float)
+        self.goal = (3.0, 0.0)  # 终点
         self.prev_distance = None
         self.max_steps = 1000
         self.step_count = 0
 
-        # ... GazeboEnvironment.__init__(...)
-        # ⭐ 安全声明 + 赋值（避免重复声明异常）
+        # 统计/辅助
+        self.episode_crashes = 0
+        self.episode_success = False
+        self.last_reason = "continue"
+        self.last_action = None
+        self.prev_front = None
+        self.prev_heading_err = None
+        self.progress_win = deque(maxlen=20)  # 用于“卡住”检测
+
+        # ------- Services -------
+        self.set_state_client = self.create_client(SetEntityState, '/gazebo/set_entity_state')
+        self.reset_client = self.create_client(Empty, '/reset_simulation')
+
+        # ------- use_sim_time 安全设置 -------
         try:
             if not self.has_parameter("use_sim_time"):
                 self.declare_parameter("use_sim_time", True)
         except Exception:
-            # 某些发行版没有 has_parameter() 或其它原因，直接忽略重复声明异常
             try:
                 self.declare_parameter("use_sim_time", True)
             except rclpy.exceptions.ParameterAlreadyDeclaredException:
                 pass
-
-        # 不管是否是新声明的，都把值设为 True
         self.set_parameters([Parameter("use_sim_time", Parameter.Type.BOOL, True)])
 
-        # Gazebo service client
-        self.set_state_client = self.create_client(SetEntityState, '/gazebo/set_entity_state')
-        self.reset_client = self.create_client(Empty, '/reset_simulation')
         self.get_logger().info(f"{node_name} node activated")
 
-        self.episode_crashes = 0
-        self.episode_success = False
-        self.last_reason = "continue"  # reach / crush / overtime / continue
-
-
-        
-
-
+    # ===================== Callbacks =====================
     def odom_callback(self, msg):
         self.position = msg.pose.pose.position
         orientation_q = msg.pose.pose.orientation
         self.orientation = self.quaternion_to_yaw(orientation_q)
 
-    def scan_callback(self, msg):
-        scan = np.array(msg.ranges)
-        scan = np.clip(scan, 0.0, 3.5)  # Clip scan range
-        self.min_distance = np.min(scan)
-        self.scan_state = scan[::len(scan)//10]  # Downsample to 10 beams
+    def scan_callback(self, msg: LaserScan):
+        scan = np.array(msg.ranges, dtype=float)
+        rng_max = getattr(msg, "range_max", 3.5) or 3.5
 
+        # 清洗：NaN/Inf/<=0 视为 range_max，避免当成“超近障碍”
+        scan[~np.isfinite(scan)] = rng_max
+        scan[scan <= 0.0] = rng_max
+        scan = np.clip(scan, 0.0, rng_max)
+
+        self.min_distance = float(np.min(scan))
+
+        # 下采样为 10 束，均匀采样，确保包含正前方附近
+        n = len(scan)
+        if n > 0:
+            idx = np.linspace(0, n - 1, 10, dtype=int)
+            self.scan_state = scan[idx]
+
+    # ===================== Utils =====================
     def quaternion_to_yaw(self, q):
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
@@ -79,8 +92,8 @@ class GazeboEnvironment(Node):
         if self.position is None or self.orientation is None:
             return None
         return np.concatenate([
-            np.array([self.position.x, self.position.y, self.orientation]),
-            self.scan_state
+            np.array([self.position.x, self.position.y, self.orientation], dtype=float),
+            self.scan_state.astype(float)
         ])
 
     def compute_distance_to_goal(self):
@@ -88,292 +101,173 @@ class GazeboEnvironment(Node):
         dy = self.goal[1] - self.position.y
         return math.hypot(dx, dy)
 
-    # def reset(self):
-    #     # Reset Gazebo world
-    #     self.get_logger().info('Resetting the Gazebo world...')
-    #     while not self.reset_client.wait_for_service(timeout_sec=1.0):
-    #         self.get_logger().info('Waiting for /reset_world service...')
-    #     req = Empty.Request()
-    #     future = self.reset_client.call_async(req)
-    #     rclpy.spin_until_future_complete(self, future)
-    #     self.get_logger().info('World reset completed.')
-
-    #     # Wait for odom and scan to update
-    #     self.get_logger().info('Waiting for initial sensor data...')
-    #     while rclpy.ok() and (self.position is None or self.orientation is None or self.min_distance == float('inf')):
-    #         rclpy.spin_once(self, timeout_sec=0.1)
-    #     self.get_logger().info('Initial sensor data received.')
-
-
-    #     self.prev_distance = None
-    #     self.step_count = 0
-    #     return self.get_observation()
-
+    # ===================== Reset =====================
     def reset(self):
-        # Reset Gazebo world
+        # 1) 重置仿真
         self.get_logger().info('Resetting the Gazebo world...')
         while not self.reset_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('Waiting for /reset_world service...')
-        req = Empty.Request()
-        future = self.reset_client.call_async(req)
+            self.get_logger().info('Waiting for /reset_simulation service...')
+        future = self.reset_client.call_async(Empty.Request())
         rclpy.spin_until_future_complete(self, future)
         self.get_logger().info('World reset completed.')
 
-        # 🟡 强制清空所有状态（非常关键）
+        # 2) 归位 TurtleBot（避免残余位姿导致一开局就贴墙）
+        state = EntityState()
+        state.name = "turtlebot3_burger"  # 如模型名不同请改
+        state.pose.position.x = -3.0
+        state.pose.position.y = 0.0
+        state.pose.position.z = 0.0
+        state.pose.orientation.x = 0.0
+        state.pose.orientation.y = 0.0
+        state.pose.orientation.z = 0.0
+        state.pose.orientation.w = 1.0  # yaw = 0
+        req = SetEntityState.Request(); req.state = state
+        if self.set_state_client.wait_for_service(timeout_sec=1.0):
+            future2 = self.set_state_client.call_async(req)
+            rclpy.spin_until_future_complete(self, future2)
+
+        # 3) 强制清空，并等待新传感器数据
         self.position = None
         self.orientation = None
-        self.min_distance = float('inf')   # ✅ 没有这行可能导致刚开始就触发碰撞done
+        self.min_distance = float('inf')
         self.prev_distance = None
         self.step_count = 0
-
-        # 🟢 等待新的传感器数据
-        self.get_logger().info('Waiting for initial sensor data...')
-        while rclpy.ok() and (self.position is None or self.orientation is None or self.min_distance == float('inf')):
-            rclpy.spin_once(self, timeout_sec=0.1)
-        self.get_logger().info('Initial sensor data received.')
-
-        # 🔴 [可选] 检查是否初始就已到达终点，避免done立即触发
-        current_distance = self.compute_distance_to_goal()
-        if current_distance < 0.3:
-            self.get_logger().warn(f"Spawned too close to goal! Distance={current_distance:.2f}")
-
-
         self.episode_crashes = 0
         self.episode_success = False
-        self.last_reason = "continue"  # reach / crush / overtime / continue
+        self.last_reason = "continue"
+        self.last_action = None
+        self.progress_win.clear()
 
+        self.get_logger().info('Waiting for initial sensor data...')
+        while rclpy.ok() and (self.position is None or self.orientation is None or self.min_distance == float('inf')):
+            rclpy.spin_once(self, timeout_sec=0.05)
+        self.get_logger().info('Initial sensor data received.')
+
+        # 起点到终点距离提示（可选）
+        d0 = self.compute_distance_to_goal()
+        if d0 < 0.3:
+            self.get_logger().warn(f"Spawned too close to goal! Distance={d0:.2f}")
 
         return self.get_observation()
 
 
-
-    # def base_step(self, linear, angular, duration=1.0):
-    #     cmd = Twist()
-    #     cmd.linear.x = linear
-    #     cmd.angular.z = angular
-    #     self.vel_pub.publish(cmd)
-    #     rclpy.spin_once(self, timeout_sec=duration)
-    #     self.vel_pub.publish(Twist())  # Stop after action
-
-
-    def base_step(self, linear, angular, duration_sim=0.5, control_hz=40):
-        """
-        duration_sim: 本次动作持续的【仿真时间】秒（不是墙钟）
-        control_hz:   控制频率（每秒发布多少次速度指令）
-        """
+    # ===================== Step helpers =====================
+    def base_step(self, linear, angular, duration_sim=0.25, control_hz=40):
         cmd = Twist()
-        cmd.linear.x = linear
-        cmd.angular.z = angular
+        cmd.linear.x = float(linear)
+        cmd.angular.z = float(angular)
 
-        # 以仿真时间为基准推进
         start = self.get_clock().now()
         period = 1.0 / control_hz
 
         while (self.get_clock().now() - start).nanoseconds * 1e-9 < duration_sim:
             self.vel_pub.publish(cmd)
-            # 处理消息，不等待墙钟（0.0），Gazebo RTF>1 时会随之加速
-            rclpy.spin_once(self, timeout_sec=0.0)
-            # 用一个很短的墙钟小睡，避免CPU 100%忙等；值越小越快
-            time.sleep(min(0.0005, period * 0.2))
-
-        # 停车，并处理最后一批回调
+            rclpy.spin_once(self, timeout_sec=0.0)  # 只处理回调，不睡墙钟
+            time.sleep(min(0.0005, period * 0.2))   # 防忙等
+        # 停车
         self.vel_pub.publish(Twist())
         rclpy.spin_once(self, timeout_sec=0.0)
 
-
-    # def compute_reward(self, action, prev_action=None):
-    #     """
-    #     奖励塑形要点：
-    #     - 弱化“朝向目标”奖励，避免死盯直线
-    #     - 利用激光的前/左/右扇区做避障引导
-    #     * 前方很近仍前进 -> 大惩罚
-    #     * 向更空的一侧转弯 -> 小奖励
-    #     - 降低原地旋转惩罚，鼓励探索
-    #     """
-    #     # --- 距离与朝向 ---
-    #     current_distance = self.compute_distance_to_goal()
-    #     if self.prev_distance is None:
-    #         self.prev_distance = current_distance
-    #     distance_diff = self.prev_distance - current_distance
-
-    #     dx = self.goal[0] - self.position.x
-    #     dy = self.goal[1] - self.position.y
-    #     goal_angle = math.atan2(dy, dx)
-    #     heading_error = goal_angle - self.orientation
-    #     heading_error = (heading_error + math.pi) % (2 * math.pi) - math.pi  # wrap [-pi, pi]
-
-    #     # 弱化“朝向目标”项（避免直线硬顶）
-    #     angle_reward = -0.3 * abs(heading_error)
-
-    #     # 基础奖励：靠近目标 + 朝向目标
-    #     reward = distance_diff * 10.0 + angle_reward
-
-    #     # --- 利用激光扇区做局部避障引导 ---
-    #     scan = np.asarray(self.scan_state, dtype=float) if hasattr(self, "scan_state") else np.array([self.min_distance])
-    #     n = len(scan)
-    #     if n >= 3:
-    #         mid = n // 2
-    #         # 前方取中间2个beam的最小值，更稳健
-    #         front = np.min(scan[max(0, mid-1):min(n, mid+1)])
-    #         left  = np.min(scan[mid:]) if mid < n else float('inf')
-    #         right = np.min(scan[:mid]) if mid > 0 else float('inf')
-    #     else:
-    #         front = self.min_distance
-    #         left, right = self.min_distance, self.min_distance
-
-    #     # 1) 前方近障仍尝试前进 => 大惩罚（距离越近惩罚越大）
-    #     if action == 0 and front < 0.6:
-    #         reward -= (0.6 - front) * 3.0   # 系数可在 2.0~5.0 间调
-
-    #     # 2) 朝更空的一侧转弯 => 小奖励（只给正向差值）
-    #     gap_bias = 0.0
-    #     if action == 1:           # 左转
-    #         gap_bias = (left - right)
-    #     elif action == 2:         # 右转
-    #         gap_bias = (right - left)
-    #     reward += 0.2 * max(0.0, gap_bias)  # 0.1~0.3 可调
-
-    #     # 3) 靠近障碍物的全局惩罚（保留）
-    #     if self.min_distance < 0.5:
-    #         reward -= (0.5 - self.min_distance) * 2.0
-
-    #     # 4) 降低旋转惩罚，保留一点点惯性约束
-    #     if action in [1, 2]:
-    #         reward -= 0.005   # 原来是 0.02
-
-    #     # --- 抗抖动项：左右来回切换给小惩罚 ---
-    #     if prev_action in (1, 2) and action in (1, 2) and prev_action != action:
-    #         reward -= 0.08   # 0.05~0.12 之间可调；先用 0.08
-
-
-    #     # 5) 轻时间惩罚，鼓励高效
-    #     reward -= 0.05
-
-    #     # --- 终止条件 ---
-    #     if current_distance < 0.3:
-    #         reward += 30.0
-    #         done = True
-    #         self.last_reason = "reach"
-    #         self.episode_success = True
-    #         self.get_logger().info("reach the end")
-    #     elif self.min_distance < 0.2:
-    #         reward -= 30.0
-    #         done = True
-    #         self.last_reason = "crush"
-    #         self.episode_crashes += 1
-    #         self.get_logger().info("crush")
-    #     elif self.step_count >= self.max_steps:
-    #         reward -= 10.0
-    #         done = True
-    #         self.last_reason = "overtime"
-    #         self.get_logger().info("overtime")
-    #     else:
-    #         done = False
-    #         self.last_reason = "continue"
-
-    #     self.prev_distance = current_distance
-
-    #     return reward, done
-
-
+    # ===================== Reward =====================
     def compute_reward(self, action, prev_action=None):
-        """
-        强化避障 & 防卡死 的奖励塑形：
-        - 进度为主，朝向为辅（弱化）
-        - 三扇区引导：前方近障+前进重罚；转向更空一侧小奖；前进偏边扣分
-        - 防抖：左右切换小罚
-        - 防卡死：短窗口内进度几乎为零且前方不空 => 小罚
-        """
-        # ---------- 目标进度 & 朝向 ----------
+        # --- 进度与朝向 ---
         cur_dist = self.compute_distance_to_goal()
         if self.prev_distance is None:
             self.prev_distance = cur_dist
-        progress = self.prev_distance - cur_dist      # >0 表示朝目标前进
+        progress = self.prev_distance - cur_dist
         self.prev_distance = cur_dist
 
         dx = self.goal[0] - self.position.x
         dy = self.goal[1] - self.position.y
         goal_angle = math.atan2(dy, dx)
         heading_err = (goal_angle - self.orientation + math.pi) % (2*math.pi) - math.pi
+        d_heading = 0.0 if self.prev_heading_err is None else abs(heading_err - self.prev_heading_err)
+        self.prev_heading_err = heading_err
 
-        # 进度奖励（主）+ 弱化朝向项（辅）
-        reward = 8.0 * progress + 0.25 * math.cos(heading_err)   # cos 更平滑，权重大幅低于进度
-
-        # ---------- 激光三扇区 ----------
-        scan = np.asarray(self.scan_state, dtype=float) if hasattr(self, "scan_state") else np.array([self.min_distance])
+        # --- 雷达三扇区 ---
+        scan = np.asarray(self.scan_state, dtype=float)
         n = len(scan)
         if n >= 5:
             mid = n // 2
-            front = np.min(scan[max(0, mid-1):min(n, mid+2)])  # 取中间3束更稳
-            left  = np.min(scan[mid:]) if mid < n else float('inf')
-            right = np.min(scan[:mid]) if mid > 0 else float('inf')
+            front = float(np.min(scan[max(0, mid-1):min(n, mid+2)]))  # 中间3束
+            left  = float(np.min(scan[mid:])) if mid < n else float('inf')
+            right = float(np.min(scan[:mid])) if mid > 0 else float('inf')
         else:
-            front = self.min_distance
-            left = right = self.min_distance
+            front = float(self.min_distance); left = right = float(self.min_distance)
 
-        # 阈值可按地图再调
-        FRONT_SOFT = 0.75      # 前方“拥挤”阈值（软惩罚）
-        FRONT_HARD = 0.55      # 前进禁区阈值（硬惩罚更强）
-        SIDE_SAFE  = 0.35      # 靠边阈值（前进时离一侧太近就扣分）
+        # --- 分段阈值 ---
+        SAFE_HEADING   = 0.80  # 仅在足够通畅时才按朝向给奖励
+        FRONT_SOFT     = 0.75  # 前方拥挤软惩罚阈值
+        FRONT_HARD     = 0.55  # 前方很近硬惩罚阈值
+        SIDE_SAFE      = 0.35  # 直行时靠边惩罚
+        EARLY_GRACE    = 3
 
-        # 1) 前方近障仍前进 => 重罚（硬/软两档）
-        if action == 0 and front < FRONT_SOFT:
-            k = 5.0 if front < FRONT_HARD else 3.0
-            reward -= k * (FRONT_SOFT - front)  # 离得越近，扣得越多
+        # --- 基础奖励：进度为主 ---
+        reward = 8.0 * progress
 
-        # 2) 向更空的一侧转弯 => 小奖励（只给正向差值）
-        if action in (1, 2):
-            gap_bias = (left - right) if action == 1 else (right - left)
-            reward += 0.25 * max(0.0, gap_bias)   # 0.15~0.35 可调
+        # 只在前方通畅时才给朝向奖励；不通畅时角度不再驱动“直冲”
+        if front >= SAFE_HEADING:
+            reward += 0.25 * math.cos(heading_err)
 
-        # 3) 前进时“偏边”扣分（鼓励居中通过）
+        # 直行时按“前方距离变化”给反馈（抑制直行抖头拿高分）
         if action == 0:
+            if self.prev_front is not None:
+                df = front - self.prev_front
+                reward += 0.4 * max(0.0, df)      # 前方更通畅 → 小奖
+                reward -= 0.6 * max(0.0, -df)     # 前方更拥挤 → 扣分
+            # 靠边直行扣分
             side_min = min(left, right)
-            # 离墙过近时线性扣分；也可用 |left-right| 惩罚偏位，这里选“安全距离”优先
             if side_min < SIDE_SAFE:
                 reward -= 1.5 * (SIDE_SAFE - side_min)
 
-        # 4) 全局安全感（与最近障碍的距离）——温和惩罚
+        # 前方近障仍直行 → 强惩罚
+        if action == 0 and front < FRONT_SOFT:
+            k = 5.0 if front < FRONT_HARD else 3.0
+            reward -= k * (FRONT_SOFT - front)
+
+        # 转向更空的一侧 → 小奖（仅正向差值）
+        if action == 1:
+            reward += 0.25 * max(0.0, (left - right))
+        elif action == 2:
+            reward += 0.25 * max(0.0, (right - left))
+
+        # 防抖1：左右切换就罚
+        if prev_action in (1,2) and action in (1,2) and prev_action != action:
+            reward -= 0.12
+
+        # 防抖2：角度误差剧烈变化（“摇头”）在前方通畅时罚
+        if front >= SAFE_HEADING:
+            reward -= 0.10 * d_heading  # 单位是弧度差
+
+        # 全局安全温和惩罚 + 轻时间惩罚
         if self.min_distance < 0.50:
             reward -= 2.0 * (0.50 - self.min_distance)
+        reward -= 0.01
 
-        # ---------- 防抖（左右来回切换罚） ----------
-        if prev_action in (1, 2) and action in (1, 2) and prev_action != action:
-            reward -= 0.10   # 0.08~0.12；抖得狠就加大
-
-        # ---------- 防卡死（短窗口内进度≈0 且前方不空） ----------
+        # === “卡住”检测：把 progress 滑窗起来，进展过小就早停 ===
         self.progress_win.append(progress)
-        if len(self.progress_win) == self.progress_win.maxlen:
-            win_prog = sum(self.progress_win)
-            # 如果窗口内几乎没进步 + 前面不是“完全通畅”，给小罚推动策略切换
-            if win_prog < 0.02 and front < 1.0:
-                reward -= 0.20   # 可逐步递增（比如再多次触发则叠加），此处先固定
+        if (len(self.progress_win) == self.progress_win.maxlen) and (self.step_count > 40):
+            if sum(self.progress_win) < 0.02:   # 近 20 步总进展 < 2cm（可按你的环境单位适当调）
+                reward -= 5.0
+                done = True
+                self.last_reason = "stuck"
+                self.get_logger().info("early stop: stuck")
+                # 记住前方距离并返回
+                self.prev_front = front
+                return reward, done
 
-        # ---------- 轻时间惩罚 ----------
-        reward -= 0.03
-
-        # ---------- 终止判定 ----------
+        # --- 终止判定（带前几步宽限） ---
         if cur_dist < 0.30:
-            reward += 30.0
-            done = True
-            self.last_reason = "reach"
-            self.episode_success = True
-            self.get_logger().info("reach the end")
-        elif self.min_distance < 0.20:
-            reward -= 30.0
-            done = True
-            self.last_reason = "crush"
-            self.episode_crashes += 1
-            self.get_logger().info("crush")
+            reward += 40.0; done = True; self.last_reason="reach"; self.episode_success=True; self.get_logger().info("reach the end")
+        elif (self.step_count > EARLY_GRACE) and (self.min_distance < 0.20):
+            reward -= 30.0; done = True; self.last_reason="crush"; self.episode_crashes += 1; self.get_logger().info("crush")
         elif self.step_count >= self.max_steps:
-            reward -= 10.0
-            done = True
-            self.last_reason = "overtime"
-            self.get_logger().info("overtime")
+            reward -= 10.0; done = True; self.last_reason="overtime"; self.get_logger().info("overtime")
         else:
-            done = False
-            self.last_reason = "continue"
+            done = False; self.last_reason="continue"
 
+        # 记住前方距离用于“前方变好/变差”反馈
+        self.prev_front = front
         return reward, done
 
 
@@ -381,41 +275,23 @@ class GazeboEnvironment(Node):
         return self.min_distance < 0.2
 
 
-# class NoMonitoringEnv(GazeboEnvironment):
-#     def step(self, action):
-#         """Discrete action: 0=forward, 1=left, 2=right"""
-#         if action == 0:
-#             self.base_step(0.4, 0.0)
-#         elif action == 1:
-#             self.base_step(0.0, 0.5)
-#         elif action == 2:
-#             self.base_step(0.0, -0.5)
-
-#         self.step_count += 1
-#         reward, done = self.compute_reward(action)
-#         obs = self.get_observation()
-#         return obs, reward, done, {}
-
+# ===================== Envs =====================
 class NoMonitoringEnv(GazeboEnvironment):
     def step(self, action):
-        if action == 0:  # 前进
-            self.base_step(0.4, 0.0,  duration_sim=0.25, control_hz=40)
-        elif action == 1:  # 左转
-            self.base_step(0.0, 0.6,  duration_sim=0.20, control_hz=40)
-        elif action == 2:  # 右转
-            self.base_step(0.0, -0.6, duration_sim=0.20, control_hz=40)
+        """Discrete action: 0=forward, 1=left, 2=right"""
+        if action == 0:
+            self.base_step(0.25, 0.0, duration_sim=0.20, control_hz=40)
+        elif action == 1:
+            self.base_step(0.0, 0.55, duration_sim=0.18, control_hz=40)
+        elif action == 2:
+            self.base_step(0.0, -0.55, duration_sim=0.18, control_hz=40)
 
         self.step_count += 1
-
-        # ...
-        prev_action = self.last_action          # 记一下之前的动作
-        reward, done = self.compute_reward(action, prev_action)  # 传入上一步动作
-        self.last_action = action               # 更新为当前动作
-        # ...
+        reward, done = self.compute_reward(action)
         obs = self.get_observation()
 
         info = {
-            "reason": self.last_reason,                           # reach/crush/overtime/continue
+            "reason": self.last_reason,
             "distance_to_goal": float(self.compute_distance_to_goal()),
             "min_laser": float(self.min_distance),
             "step_count": int(self.step_count),
@@ -423,10 +299,7 @@ class NoMonitoringEnv(GazeboEnvironment):
             "success": bool(self.episode_success),
             "crashes_in_episode": int(self.episode_crashes),
         }
-
-
         return obs, reward, done, info
-
 
 
 class PassiveMonitoringEnv(GazeboEnvironment):
@@ -438,7 +311,9 @@ class PassiveMonitoringEnv(GazeboEnvironment):
 
 class ActiveMonitoringEnv(GazeboEnvironment):
     def step(self, action):
-        if self.is_violation() and action == 0:  # Trying to move forward into obstacle
-            self.get_logger().warn("Active Monitor: Stopping action due to violation!")
-            action = 1  # Replace with turn left
+        # 前方太近时禁止前进，随机转向（保底不首撞）
+        front = float(self.scan_state[len(self.scan_state) // 2])
+        if action == 0 and front < 0.35:
+            self.get_logger().warn("Active Monitor: block forward, turn!")
+            action = 1 if np.random.rand() < 0.5 else 2
         return super().step(action)

@@ -26,18 +26,30 @@ class DDQNAgent:
         self.q_net = DDQN(state_dim, action_dim).to(device)
         self.target_net = DDQN(state_dim, action_dim).to(device)
         self.target_net.load_state_dict(self.q_net.state_dict())
-        self.optimizer = optim.Adam(self.q_net.parameters(), lr=0.001)
-        self.memory = deque(maxlen=10000)
+        self.optimizer = optim.Adam(self.q_net.parameters(), lr=5e-4)
+        self.memory = deque(maxlen=50000)
         self.gamma = 0.99
         self.batch_size = 64
         self.epsilon = 1.0
         self.epsilon_min = 0.05
+        # 训练前的 warmup（经验积累）步数
+        self.train_start = 1000
+        # 为了“定期更新目标网”提供一个计数器
+        self.update_counter = 0
         self.epsilon_decay = 0.99
         self.loss_history = []
 
     def act(self, state):
+         # 带偏置的随机策略：随机时更倾向前进（提高有效探索）
         if random.random() < self.epsilon:
-            return random.randint(0, 2)  # 3 actions
+            # 0=forward, 1=left, 2=right
+            r = random.random()
+            if r < 0.7:
+                return 0
+            elif r < 0.85:
+                return 1
+            else:
+                return 2
         state = torch.FloatTensor(state).unsqueeze(0).to(device)
         with torch.no_grad():
             q_values = self.q_net(state)
@@ -48,8 +60,9 @@ class DDQNAgent:
 
 
     def replay(self):
-        if len(self.memory) < self.batch_size:
+        if len(self.memory) < max(self.batch_size, self.train_start):
             return
+
         batch = random.sample(self.memory, self.batch_size)
         s, a, r, s_, done = zip(*batch)
 
@@ -67,9 +80,15 @@ class DDQNAgent:
         loss = nn.MSELoss()(q_values, target.detach())
         self.optimizer.zero_grad()
         loss.backward()
+
+        # 裁剪梯度，稳定训练
+        torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=5.0)
+       
         self.optimizer.step()
 
         self.loss_history.append(loss.item())
+        self.update_counter += 1  # 供外部判断是否需要同步目标网
+
 
 
     def update_target(self):

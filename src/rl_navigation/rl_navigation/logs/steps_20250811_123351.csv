@@ -1,1 +1,0 @@
-episode,step,action,reward,epsilon,distance_to_goal,min_laser,done,reason,total_reward_so_far
