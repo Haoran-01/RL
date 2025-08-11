@@ -234,10 +234,11 @@ class GazeboEnvironment(Node):
             reward -= k * (FRONT_SOFT - front)
 
         # 转向更空的一侧 → 小奖（仅正向差值）
-        if action == 1 and progress >= 0:
-            reward += 0.25 * max(0.0, (left - right))
-        elif action == 2 and progress >= 0:
-            reward += 0.25 * max(0.0, (right - left))
+        turn_bonus_factor = 1.0 if progress >= 0 else 0.0
+        if action == 1:
+            reward += turn_bonus_factor * 0.25 * max(0.0, (left - right))
+        elif action == 2:
+            reward += turn_bonus_factor * 0.25 * max(0.0, (right - left))
 
         # 防抖1：左右切换就罚
         if prev_action in (1,2) and action in (1,2) and prev_action != action:
@@ -338,9 +339,9 @@ class NoMonitoringEnv(GazeboEnvironment):
         if action == 0:
             self.base_step(0.25, 0.0, duration_sim=0.20, control_hz=40)
         elif action == 1:
-            self.base_step(0.0, 0.55, duration_sim=0.18, control_hz=40)
+            self.base_step(0.15, 0.55, duration_sim=0.18, control_hz=40)
         elif action == 2:
-            self.base_step(0.0, -0.55, duration_sim=0.18, control_hz=40)
+            self.base_step(0.15, -0.55, duration_sim=0.18, control_hz=40)
 
         self.step_count += 1
         reward, done = self.compute_reward(action)
