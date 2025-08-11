@@ -40,7 +40,11 @@ class GazeboEnvironment(Node):
         self.last_action = None
         self.prev_front = None
         self.prev_heading_err = None
-        self.progress_win = deque(maxlen=20)  # 用于“卡住”检测
+        self.progress_win = deque(maxlen=40)  # 用于“卡住”检测
+        self.heading_win  = deque(maxlen=40)   # 记录 heading_err
+        self.action_win   = deque(maxlen=40)   # 记录动作，区分是否在尝试转向
+ 
+
 
         # ------- Services -------
         self.set_state_client = self.create_client(SetEntityState, '/gazebo/set_entity_state')
@@ -203,10 +207,14 @@ class GazeboEnvironment(Node):
         EARLY_GRACE    = 3
 
         # --- 基础奖励：进度为主 ---
-        reward = 8.0 * progress
+        base_progress_reward = 5.0 * progress#
+        if cur_dist < 1.0:
+            base_progress_reward *= 1.5  # 距离<1m时奖励加成
+        reward = base_progress_reward
 
         # 只在前方通畅时才给朝向奖励；不通畅时角度不再驱动“直冲”
-        if front >= SAFE_HEADING:
+
+        if progress >= 0 and front >= SAFE_HEADING and abs(heading_err) < abs(getattr(self, "prev_heading_err", heading_err)):
             reward += 0.25 * math.cos(heading_err)
 
         # 直行时按“前方距离变化”给反馈（抑制直行抖头拿高分）
@@ -218,7 +226,7 @@ class GazeboEnvironment(Node):
             # 靠边直行扣分
             side_min = min(left, right)
             if side_min < SIDE_SAFE:
-                reward -= 1.5 * (SIDE_SAFE - side_min)
+                reward -= 3.0 * (SIDE_SAFE - side_min)
 
         # 前方近障仍直行 → 强惩罚
         if action == 0 and front < FRONT_SOFT:
@@ -226,48 +234,96 @@ class GazeboEnvironment(Node):
             reward -= k * (FRONT_SOFT - front)
 
         # 转向更空的一侧 → 小奖（仅正向差值）
-        if action == 1:
+        if action == 1 and progress >= 0:
             reward += 0.25 * max(0.0, (left - right))
-        elif action == 2:
+        elif action == 2 and progress >= 0:
             reward += 0.25 * max(0.0, (right - left))
 
         # 防抖1：左右切换就罚
         if prev_action in (1,2) and action in (1,2) and prev_action != action:
-            reward -= 0.12
+            reward -= 0.3
 
         # 防抖2：角度误差剧烈变化（“摇头”）在前方通畅时罚
         if front >= SAFE_HEADING:
-            reward -= 0.10 * d_heading  # 单位是弧度差
+            reward -= 0.15 * d_heading  # 单位是弧度差
 
         # 全局安全温和惩罚 + 轻时间惩罚
         if self.min_distance < 0.50:
-            reward -= 2.0 * (0.50 - self.min_distance)
-        reward -= 0.01
+            dist_penalty = 2.0 * (0.50 - self.min_distance) ** 1.5
+            reward -= dist_penalty
 
-        # === “卡住”检测：把 progress 滑窗起来，进展过小就早停 ===
+        # === 修改6：stuck 迹象提前扣分（非终止） ===
         self.progress_win.append(progress)
-        if (len(self.progress_win) == self.progress_win.maxlen) and (self.step_count > 40):
-            if sum(self.progress_win) < 0.02:   # 近 20 步总进展 < 2cm（可按你的环境单位适当调）
-                reward -= 5.0
-                done = True
-                self.last_reason = "stuck"
-                self.get_logger().info("early stop: stuck")
-                # 记住前方距离并返回
-                self.prev_front = front
-                return reward, done
+        if len(self.progress_win) == self.progress_win.maxlen and sum(self.progress_win) < 0.03:
+            reward -= 0.2  # 窗口进展极低时提前扣分
 
         # --- 终止判定（带前几步宽限） ---
         if cur_dist < 0.30:
             reward += 40.0; done = True; self.last_reason="reach"; self.episode_success=True; self.get_logger().info("reach the end")
         elif (self.step_count > EARLY_GRACE) and (self.min_distance < 0.20):
             reward -= 30.0; done = True; self.last_reason="crush"; self.episode_crashes += 1; self.get_logger().info("crush")
-        elif self.step_count >= self.max_steps:
-            reward -= 10.0; done = True; self.last_reason="overtime"; self.get_logger().info("overtime")
         else:
-            done = False; self.last_reason="continue"
+            # 3) 改进版 stuck（卡住）判断：低进度 + 方向几乎没变化 + 没认真转向 + 前方也没变宽
+            self.progress_win.append(progress)
+            self.heading_win.append(heading_err)
+            self.action_win.append(action)
+
+            # 仅在步数足够、窗口填满后才检查
+            GRACE_STEPS_FOR_STUCK = 60       # 原来 40 -> 放宽
+            PROG_THRESH = 0.05              # 原来 0.02 -> 放宽（40步总计 < 5cm 视为几乎没动）
+            HEADING_JITTER = 0.12            # 窗口内最大 |Δheading| < 0.12 rad (~7°) 视为“没怎么转”
+            TURN_RATIO_MAX = 0.30            # 窗口内转向比例 < 30% 视为“没认真尝试转弯”
+            FRONT_IMPROVE = 0.05             # 前方距离改善 < 0.05 m
+
+            if (self.step_count > GRACE_STEPS_FOR_STUCK 
+                and len(self.progress_win) == self.progress_win.maxlen):
+
+                total_prog = float(sum(self.progress_win))
+                # 角度变化幅度
+                if len(self.heading_win) >= 2:
+                    max_d_heading = max(abs(b-a) for a, b in zip(self.heading_win, list(self.heading_win)[1:]))
+                else:
+                    max_d_heading = 0.0
+
+                # 转向占比
+                turns = sum(1 for a in self.action_win if a in (1, 2))
+                turn_ratio = turns / float(len(self.action_win))
+
+                # 前方距离改善
+                front_now = front
+                front_prev = self.prev_front if self.prev_front is not None else front_now
+                front_improve = max(0.0, front_now - front_prev)
+
+                stuck = (
+                    total_prog < PROG_THRESH and
+                    max_d_heading < HEADING_JITTER and
+                    turn_ratio < TURN_RATIO_MAX and
+                    front_improve < FRONT_IMPROVE
+                )
+
+                if stuck:
+                    reward -= 5.0
+                    done = True
+                    self.last_reason = "stuck"
+                    self.get_logger().info(
+                        f"early stop: stuck | prog={total_prog:.3f}/{self.progress_win.maxlen} "
+                        f"| d_head_max={max_d_heading:.3f} | turn_ratio={turn_ratio:.2f} | d_front={front_improve:.3f}"
+                    )
+                    self.prev_front = front
+                    return reward, done
+
+            # 4) 超时/继续
+            if self.step_count >= self.max_steps:
+                reward -= 10.0; done = True
+                self.last_reason = "overtime"
+                self.get_logger().info("overtime")
+            else:
+                done = False
+                self.last_reason = "continue"
 
         # 记住前方距离用于“前方变好/变差”反馈
         self.prev_front = front
+
         return reward, done
 
 

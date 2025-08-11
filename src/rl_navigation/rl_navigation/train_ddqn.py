@@ -9,20 +9,20 @@ import csv
 from datetime import datetime
 
 
-def train_ddqn(episodes=2000, max_steps=500):
+def train_ddqn(episodes=1000, max_steps=1000):
     rclpy.init()
     env = NoMonitoringEnv()
 
     agent = DDQNAgent(state_dim=13, action_dim=3)  # 3(pos+yaw)+10 beams
 
    # 如果有旧模型，加载
-    if os.path.exists("ddqn_model_final_v3.pth"):
-        agent.load("ddqn_model_final_v3.pth")
+    if os.path.exists("ddqn_model_final_v2.pth"):
+        agent.load("ddqn_model_final_v2.pth")
         agent.epsilon = 1.0 # 可选，手动调整起始探索率
 
-    # 线性衰减设置：600 个 episode 从 1.0 -> 0.05
-    EPS_DECAY_EPISODES = 1600
-    EPS_START = 0.10
+    # 线性衰减设置：200 个 episode 从 1.0 -> 0.05
+    EPS_DECAY_EPISODES = 200
+    EPS_START = 0.05
     EPS_END = agent.epsilon_min
 
     # 目标网同步间隔（按训练步计数，不是环境步）
@@ -115,6 +115,9 @@ def train_ddqn(episodes=2000, max_steps=500):
 
     env.destroy_node()
     rclpy.shutdown()
+
+
+
 
 
 if __name__ == "__main__":
