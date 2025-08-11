@@ -22,7 +22,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             'world': world_file,
-            'gui': 'false'
+            # 'gui': 'false'
             }.items()
     )
 

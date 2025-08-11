@@ -181,5 +181,13 @@
       <pose>-3 0 0 0 0 0</pose> <!-- 起点位置 -->
     </include>
 
+    <physics type='ode'>
+      <max_step_size>0.001</max_step_size>             <!-- 默认值，保持稳定 -->
+      <real_time_factor>2.0</real_time_factor>          <!-- 比实际快 2 倍 -->
+      <real_time_update_rate>2000</real_time_update_rate> <!-- 更新频率高，适配 sensors -->
+    </physics>
+
+
+
   </world>
 </sdf>

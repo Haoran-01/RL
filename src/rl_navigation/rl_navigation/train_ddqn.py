@@ -12,8 +12,8 @@ def train_ddqn(episodes=500, max_steps=1000):
     agent = DDQNAgent(state_dim=13, action_dim=3)  # 3 pos+orientation + 10 laser beams
 
     # 如果有旧模型，加载
-    if os.path.exists("ddqn_model_v4.pth"):
-        agent.load("ddqn_model_v4.pth")
+    if os.path.exists("ddqn_model_wall_v1.pth"):
+        agent.load("ddqn_model_wall_v1.pth")
         agent.epsilon = 1.0  # 可选，手动调整起始探索率
 
 
@@ -44,7 +44,7 @@ def train_ddqn(episodes=500, max_steps=1000):
         agent.update_target()
         print(f"Episode {episode+1}/{episodes} | Total Reward: {total_reward:.2f} | Steps: {step+1}")
 
-    with open("loss_log_v5.txt", "w") as f:
+    with open("loss_log_wall_v2.txt", "w") as f:
         for l in agent.loss_history:
             f.write(f"{l}\n")
 
@@ -53,9 +53,9 @@ def train_ddqn(episodes=500, max_steps=1000):
     plt.xlabel("Training Steps")
     plt.ylabel("Loss")
     plt.title("Loss Curve")
-    plt.savefig("loss_curve_v5.png")
+    plt.savefig("loss_curve_wall_v2.png")
 
-    agent.save("ddqn_model_v5.pth")
+    agent.save("ddqn_model_wall_v2.pth")
 
     env.destroy_node()
     rclpy.shutdown()
