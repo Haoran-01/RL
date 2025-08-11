@@ -9,7 +9,7 @@ def generate_launch_description():
     # 获取路径
     pkg_rl_navigation = get_package_share_directory('rl_navigation')
     pkg_turtlebot3_description = get_package_share_directory('turtlebot3_description')
-    world_file = os.path.join(pkg_rl_navigation, 'worlds', '2_env.world')
+    world_file = os.path.join(pkg_rl_navigation, 'worlds', '4_env.world')
     urdf_file = os.path.join(pkg_turtlebot3_description, 'urdf', 'turtlebot3_burger.urdf')
 
     # 设置 TurtleBot3 模型（必须）

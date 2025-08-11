@@ -11,7 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/rl_navigation/launch', ['launch/start_env.launch.py', 'launch/test_env.launch.py']),
-        ('share/rl_navigation/worlds', ['worlds/2_env.world'])
+        ('share/rl_navigation/worlds', ['worlds/2_env.world', 'worlds/4_env.world'])
     ],
     install_requires=['setuptools'],
     zip_safe=True,
