@@ -1,0 +1,54 @@
+
+# path: /home/haoran/RL/src/ # this is the path to the ros workspace you'd like the monitor package in
+# nodes: # here we list the nodes we are going to monitor
+#   - node:
+#       name: robot_state_publisher
+#       package: rl_navigation
+#       path: /home/haoran/RL/src/rl_navigation/launch/test_env.launch.py
+
+# monitors: # here we list the monitors we are going to generate
+#   - monitor:
+#       id: monitor_0
+#       log: ./log.txt # file where the monitor will log the observed events
+#       silent: False # we let the monitor to print info during its execution
+#       oracle: # the oracle running and ready to check the specification (localhost in this case)
+#         port: 8080 # the port where it is listening
+#         url: 127.0.0.1 # the url where it is listening
+#         action: nothing # the oracle will not change the message
+#       topics: # the list of topics this monitor is going to intercept
+#         - name: chatter # name of the topic
+#           type: std_msgs.msg.String # type of the topic
+#           action: filter
+#           publishers:
+#            - robot_state_publisher
+
+path: /home/haoran/RL/src/
+nodes:
+  - node:
+      name: rl_env
+      package: rl_navigation
+      path: /home/haoran/RL/src/rl_navigation/launch/bringup_training.launch.xml
+
+monitors:
+  - monitor:
+      id: monitor_rl
+      log: ./log.txt
+      silent: False
+      oracle:
+        port: 8080
+        url: 127.0.0.1
+        action: nothing
+      topics:
+        - name: /cmd_vel_raw
+          type: geometry_msgs.msg.Twist
+          action: filter
+          publishers:
+            - rl_env
+
+        - name: /scan_min
+          type: sensor_msgs.msg.LaserScan
+          action: log
+
+        - name: /odom
+          type: nav_msgs.msg.Odometry
+          action: log

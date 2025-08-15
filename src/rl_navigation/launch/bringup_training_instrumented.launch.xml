@@ -1,0 +1,28 @@
+<launch>
+  
+  <set_env name="TURTLEBOT3_MODEL" value="burger" />
+
+  
+  <include file="$(find-pkg-share gazebo_ros)/launch/gazebo.launch.py">
+    <arg name="world" value="$(find-pkg-share rl_navigation)/worlds/4_env.world" />
+  </include>
+
+  
+  <node pkg="robot_state_publisher" exec="robot_state_publisher" name="robot_state_publisher" output="screen">
+    
+    <param name="robot_description" value="$(command 'cat $(find-pkg-share turtlebot3_description)/urdf/turtlebot3_burger.urdf')" />
+    <param name="use_sim_time" value="true" />
+  </node>
+
+  
+  <node pkg="rl_navigation" exec="train_ddqn" name="rl_env" output="screen">
+    <param name="use_sim_time" value="true" />
+    <remap from="/cmd_vel" to="/cmd_vel_raw" />
+  <remap from="/cmd_vel_raw" to="/cmd_vel_raw_mon" /></node>
+
+  <node pkg="rl_navigation" exec="scan_sanitizer" name="scan_sanitizer" output="screen" />
+
+  
+  <node pkg="rl_navigation" exec="cmd_guard" name="cmd_guard" output="screen" />
+
+</launch>
