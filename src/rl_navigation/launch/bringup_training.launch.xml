@@ -18,12 +18,12 @@
   <!-- 训练节点（确保你已把 train_ddqn 安装为 console_script；节点名要与 online_config.yaml 的 publishers 一致：rl_env） -->
   <node pkg="rl_navigation" exec="train_ddqn" name="rl_env" output="screen">
     <param name="use_sim_time" value="true"/>
-    <remap from="/cmd_vel" to="/cmd_vel_raw"/>
+    <!-- <remap from="/cmd_vel" to="/cmd_vel_raw"/> -->
   </node>
 
   <node pkg="rl_navigation" exec="scan_sanitizer" name="scan_sanitizer" output="screen"/>
 
   <!-- Guard: allowed /cmd_vel_raw -> /cmd_vel; on violation -> turn -->
-  <node pkg="rl_navigation" exec="cmd_guard" name="cmd_guard" output="screen"/>
+  <!-- <node pkg="rl_navigation" exec="cmd_guard" name="cmd_guard" output="screen"/> -->
 
 </launch>

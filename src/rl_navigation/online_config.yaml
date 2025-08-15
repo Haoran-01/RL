@@ -34,19 +34,24 @@ monitors:
       id: monitor_rl
       log: ./log.txt
       silent: False
+      warning: 1  
       oracle:
         port: 8080
         url: 127.0.0.1
         action: nothing
       topics:
-        - name: /cmd_vel_raw
+        # - name: /cmd_vel_raw
+        #   type: geometry_msgs.msg.Twist
+        #   action: filter
+        #   publishers:
+        #     - rl_env
+          
+        - name: /cmd_vel
           type: geometry_msgs.msg.Twist
-          action: filter
-          publishers:
-            - rl_env
+          action: log
 
         - name: /scan_min
-          type: sensor_msgs.msg.LaserScan
+          type: std_msgs.msg.Float32
           action: log
 
         - name: /odom

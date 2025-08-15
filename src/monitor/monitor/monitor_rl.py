@@ -13,17 +13,16 @@ from rosmonitoring_interfaces.msg import MonitorError
 from std_msgs.msg import *
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from geometry_msgs.msg import *
-from sensor_msgs.msg import *
 from nav_msgs.msg import *
 # done import
 
 class ROSMonitor_monitor_rl(Node):
 
 
-	def callback_cmd_vel_raw(self,data):
+	def callback_cmd_vel(self,data):
 		self.get_logger().info("monitor has observed "+ str(data))
 		dict= rosidl_runtime_py.message_to_ordereddict(data)
-		dict['topic']='/cmd_vel_raw'
+		dict['topic']='/cmd_vel'
 		dict['time']=float(self.get_clock().now().to_msg().sec)
 		self.ws_lock.acquire()
 		while dict['time'] in self.dict_msgs:
@@ -86,15 +85,13 @@ class ROSMonitor_monitor_rl(Node):
 
 		# done creating monitor publishers
 
-		self.config_publishers['/cmd_vel_raw']=self.create_publisher(topic='/cmd_vel_raw',msg_type=Twist,qos_profile=1000)
-
-		self.publish_topics=True
-		self.topics_info['/cmd_vel_raw']={'package': 'geometry_msgs.msg', 'type': 'Twist'}
-		self.topics_info['/scan_min']={'package': 'sensor_msgs.msg', 'type': 'LaserScan'}
+		self.publish_topics=False
+		self.topics_info['/cmd_vel']={'package': 'geometry_msgs.msg', 'type': 'Twist'}
+		self.topics_info['/scan_min']={'package': 'std_msgs.msg', 'type': 'Float32'}
 		self.topics_info['/odom']={'package': 'nav_msgs.msg', 'type': 'Odometry'}
-		self.config_subscribers['/cmd_vel_raw']=self.create_subscription(topic='/cmd_vel_raw_mon',msg_type=Twist,callback=self.callback_cmd_vel_raw,qos_profile=1000)
+		self.config_subscribers['/cmd_vel']=self.create_subscription(topic='/cmd_vel',msg_type=Twist,callback=self.callback_cmd_vel,qos_profile=1000)
 
-		self.config_subscribers['/scan_min']=self.create_subscription(topic='/scan_min',msg_type=LaserScan,callback=self.callback_scan_min,qos_profile=1000)
+		self.config_subscribers['/scan_min']=self.create_subscription(topic='/scan_min',msg_type=Float32,callback=self.callback_scan_min,qos_profile=1000)
 
 		self.config_subscribers['/odom']=self.create_subscription(topic='/odom',msg_type=Odometry,callback=self.callback_odom,qos_profile=1000)
 
@@ -156,7 +153,7 @@ def main(args=None):
 	rclpy.init(args=args)
 	log = './log.txt'
 	actions = {}
-	actions['/cmd_vel_raw']=('filter',0)
+	actions['/cmd_vel']=('log',0)
 	actions['/scan_min']=('log',0)
 	actions['/odom']=('log',0)
 	monitor = ROSMonitor_monitor_rl('monitor_rl',log,actions)

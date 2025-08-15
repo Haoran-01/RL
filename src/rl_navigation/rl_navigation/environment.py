@@ -20,6 +20,7 @@ class GazeboEnvironment(Node):
 
         # ------- ROS IO -------
         self.vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        # self.vel_pub = self.create_publisher(Twist, '/cmd_vel_raw', 10)
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
 

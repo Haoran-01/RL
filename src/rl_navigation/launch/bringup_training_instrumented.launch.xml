@@ -17,12 +17,12 @@
   
   <node pkg="rl_navigation" exec="train_ddqn" name="rl_env" output="screen">
     <param name="use_sim_time" value="true" />
-    <remap from="/cmd_vel" to="/cmd_vel_raw" />
-  <remap from="/cmd_vel_raw" to="/cmd_vel_raw_mon" /></node>
+    
+  </node>
 
   <node pkg="rl_navigation" exec="scan_sanitizer" name="scan_sanitizer" output="screen" />
 
   
-  <node pkg="rl_navigation" exec="cmd_guard" name="cmd_guard" output="screen" />
+  
 
 </launch>
