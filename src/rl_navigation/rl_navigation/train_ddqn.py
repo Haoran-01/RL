@@ -111,7 +111,7 @@ def train_ddqn(episodes=1000, max_steps=1000):
                 int(crashes_this_episode), float(avg_r), float(agent.epsilon), final_reason
             ])
 
-    torch.save(agent.q_net.state_dict(), "ddqn_model_final_v3.pth")
+    torch.save(agent.q_net.state_dict(), "ddqn_model_no_monitoring.pth")
 
     env.destroy_node()
     rclpy.shutdown()

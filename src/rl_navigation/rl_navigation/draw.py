@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # 读取训练日志
-df = pd.read_csv("logs/episodes_20250811_173321.csv")
+df = pd.read_csv("logs/episodes_20250814_124621.csv")
 
 # 如果 CSV 中有列名包含空格或意外字符，可以先检查一下
 # print(df.columns)
