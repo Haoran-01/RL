@@ -19,8 +19,8 @@ class GazeboEnvironment(Node):
         super().__init__(node_name)
 
         # ------- ROS IO -------
-        self.vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        # self.vel_pub = self.create_publisher(Twist, '/cmd_vel_raw', 10)
+        # self.vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.vel_pub = self.create_publisher(Twist, '/cmd_vel_raw', 10)
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
 
@@ -172,6 +172,7 @@ class GazeboEnvironment(Node):
         # 停车
         self.vel_pub.publish(Twist())
         rclpy.spin_once(self, timeout_sec=0.0)
+
 
     # ===================== Reward =====================
     def compute_reward(self, action, prev_action=None):
@@ -369,9 +370,25 @@ class PassiveMonitoringEnv(GazeboEnvironment):
 
 class ActiveMonitoringEnv(GazeboEnvironment):
     def step(self, action):
-        # 前方太近时禁止前进，随机转向（保底不首撞）
-        front = float(self.scan_state[len(self.scan_state) // 2])
-        if action == 0 and front < 0.35:
-            self.get_logger().warn("Active Monitor: block forward, turn!")
-            action = 1 if np.random.rand() < 0.5 else 2
-        return super().step(action)
+        """Discrete action: 0=forward, 1=left, 2=right"""
+        if action == 0:
+            self.base_step(0.25, 0.0, duration_sim=0.20, control_hz=40)
+        elif action == 1:
+            self.base_step(0.15, 0.55, duration_sim=0.18, control_hz=40)
+        elif action == 2:
+            self.base_step(0.15, -0.55, duration_sim=0.18, control_hz=40)
+
+        self.step_count += 1
+        reward, done = self.compute_reward(action)
+        obs = self.get_observation()
+
+        info = {
+            "reason": self.last_reason,
+            "distance_to_goal": float(self.compute_distance_to_goal()),
+            "min_laser": float(self.min_distance),
+            "step_count": int(self.step_count),
+            "violation": bool(self.is_violation()),
+            "success": bool(self.episode_success),
+            "crashes_in_episode": int(self.episode_crashes),
+        }
+        return obs, reward, done, info
