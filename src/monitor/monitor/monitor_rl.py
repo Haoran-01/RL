@@ -49,6 +49,21 @@ class ROSMonitor_monitor_rl(Node):
 		self.get_logger().info("event propagated to oracle")
 		self.on_message_topic(message)
 
+	def callback_scan_front_min(self,data):
+		self.get_logger().info("monitor has observed "+ str(data))
+		dict= rosidl_runtime_py.message_to_ordereddict(data)
+		dict['topic']='/scan_front_min'
+		dict['time']=float(self.get_clock().now().to_msg().sec)
+		self.ws_lock.acquire()
+		while dict['time'] in self.dict_msgs:
+			dict['time']+=0.01
+		self.ws.send(json.dumps(dict))
+		self.dict_msgs[dict['time']] = data
+		message=self.ws.recv()
+		self.ws_lock.release()
+		self.get_logger().info("event propagated to oracle")
+		self.on_message_topic(message)
+
 	def callback_odom(self,data):
 		self.get_logger().info("monitor has observed "+ str(data))
 		dict= rosidl_runtime_py.message_to_ordereddict(data)
@@ -90,10 +105,13 @@ class ROSMonitor_monitor_rl(Node):
 		self.publish_topics=True
 		self.topics_info['/cmd_vel_raw']={'package': 'geometry_msgs.msg', 'type': 'Twist'}
 		self.topics_info['/scan_min']={'package': 'std_msgs.msg', 'type': 'Float32'}
+		self.topics_info['/scan_front_min']={'package': 'std_msgs.msg', 'type': 'Float32'}
 		self.topics_info['/odom']={'package': 'nav_msgs.msg', 'type': 'Odometry'}
 		self.config_subscribers['/cmd_vel_raw']=self.create_subscription(topic='/cmd_vel_raw_mon',msg_type=Twist,callback=self.callback_cmd_vel_raw,qos_profile=1000)
 
 		self.config_subscribers['/scan_min']=self.create_subscription(topic='/scan_min',msg_type=Float32,callback=self.callback_scan_min,qos_profile=1000)
+
+		self.config_subscribers['/scan_front_min']=self.create_subscription(topic='/scan_front_min',msg_type=Float32,callback=self.callback_scan_front_min,qos_profile=1000)
 
 		self.config_subscribers['/odom']=self.create_subscription(topic='/odom',msg_type=Odometry,callback=self.callback_odom,qos_profile=1000)
 
@@ -157,6 +175,7 @@ def main(args=None):
 	actions = {}
 	actions['/cmd_vel_raw']=('filter',0)
 	actions['/scan_min']=('log',0)
+	actions['/scan_front_min']=('log',0)
 	actions['/odom']=('log',0)
 	monitor = ROSMonitor_monitor_rl('monitor_rl',log,actions)
 	rclpy.spin(monitor)

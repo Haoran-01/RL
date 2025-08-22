@@ -1,27 +1,3 @@
-
-# path: /home/haoran/RL/src/ # this is the path to the ros workspace you'd like the monitor package in
-# nodes: # here we list the nodes we are going to monitor
-#   - node:
-#       name: robot_state_publisher
-#       package: rl_navigation
-#       path: /home/haoran/RL/src/rl_navigation/launch/test_env.launch.py
-
-# monitors: # here we list the monitors we are going to generate
-#   - monitor:
-#       id: monitor_0
-#       log: ./log.txt # file where the monitor will log the observed events
-#       silent: False # we let the monitor to print info during its execution
-#       oracle: # the oracle running and ready to check the specification (localhost in this case)
-#         port: 8080 # the port where it is listening
-#         url: 127.0.0.1 # the url where it is listening
-#         action: nothing # the oracle will not change the message
-#       topics: # the list of topics this monitor is going to intercept
-#         - name: chatter # name of the topic
-#           type: std_msgs.msg.String # type of the topic
-#           action: filter
-#           publishers:
-#            - robot_state_publisher
-
 path: /home/haoran/RL/src/
 nodes:
   - node:
@@ -45,12 +21,12 @@ monitors:
           action: filter
           publishers:
             - rl_env
-          
-        # - name: /cmd_vel
-        #   type: geometry_msgs.msg.Twist
-        #   action: log
 
         - name: /scan_min
+          type: std_msgs.msg.Float32
+          action: log
+
+        - name: /scan_front_min           # 新增：供 property 使用
           type: std_msgs.msg.Float32
           action: log
 
