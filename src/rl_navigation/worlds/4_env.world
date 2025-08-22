@@ -193,6 +193,10 @@
       <real_time_update_rate>0</real_time_update_rate>
       <real_time_factor>0</real_time_factor>
 
+      <!-- <real_time_factor>0.1</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>  -->
+
+
       <ode>
         <solver>
           <type>quick</type>

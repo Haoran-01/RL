@@ -30,6 +30,6 @@ monitors:
           type: std_msgs.msg.Float32
           action: log
 
-        - name: /odom
-          type: nav_msgs.msg.Odometry
-          action: log
+        # - name: /odom
+        #   type: nav_msgs.msg.Odometry
+        #   action: log

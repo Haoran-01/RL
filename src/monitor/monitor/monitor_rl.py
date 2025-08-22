@@ -13,7 +13,6 @@ from rosmonitoring_interfaces.msg import MonitorError
 from std_msgs.msg import *
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from geometry_msgs.msg import *
-from nav_msgs.msg import *
 # done import
 
 class ROSMonitor_monitor_rl(Node):
@@ -64,21 +63,6 @@ class ROSMonitor_monitor_rl(Node):
 		self.get_logger().info("event propagated to oracle")
 		self.on_message_topic(message)
 
-	def callback_odom(self,data):
-		self.get_logger().info("monitor has observed "+ str(data))
-		dict= rosidl_runtime_py.message_to_ordereddict(data)
-		dict['topic']='/odom'
-		dict['time']=float(self.get_clock().now().to_msg().sec)
-		self.ws_lock.acquire()
-		while dict['time'] in self.dict_msgs:
-			dict['time']+=0.01
-		self.ws.send(json.dumps(dict))
-		self.dict_msgs[dict['time']] = data
-		message=self.ws.recv()
-		self.ws_lock.release()
-		self.get_logger().info("event propagated to oracle")
-		self.on_message_topic(message)
-
 	def __init__(self,monitor_name,log,actions):
 		self.monitor_publishers={}
 		self.config_publishers={}
@@ -106,14 +90,11 @@ class ROSMonitor_monitor_rl(Node):
 		self.topics_info['/cmd_vel_raw']={'package': 'geometry_msgs.msg', 'type': 'Twist'}
 		self.topics_info['/scan_min']={'package': 'std_msgs.msg', 'type': 'Float32'}
 		self.topics_info['/scan_front_min']={'package': 'std_msgs.msg', 'type': 'Float32'}
-		self.topics_info['/odom']={'package': 'nav_msgs.msg', 'type': 'Odometry'}
 		self.config_subscribers['/cmd_vel_raw']=self.create_subscription(topic='/cmd_vel_raw_mon',msg_type=Twist,callback=self.callback_cmd_vel_raw,qos_profile=1000)
 
 		self.config_subscribers['/scan_min']=self.create_subscription(topic='/scan_min',msg_type=Float32,callback=self.callback_scan_min,qos_profile=1000)
 
 		self.config_subscribers['/scan_front_min']=self.create_subscription(topic='/scan_front_min',msg_type=Float32,callback=self.callback_scan_front_min,qos_profile=1000)
-
-		self.config_subscribers['/odom']=self.create_subscription(topic='/odom',msg_type=Odometry,callback=self.callback_odom,qos_profile=1000)
 
 		self.get_logger().info('Monitor' + self.name + ' started and ready' )
 		self.get_logger().info('Logging at' + self.logfn )
@@ -176,7 +157,6 @@ def main(args=None):
 	actions['/cmd_vel_raw']=('filter',0)
 	actions['/scan_min']=('log',0)
 	actions['/scan_front_min']=('log',0)
-	actions['/odom']=('log',0)
 	monitor = ROSMonitor_monitor_rl('monitor_rl',log,actions)
 	rclpy.spin(monitor)
 	monitor.ws.close()

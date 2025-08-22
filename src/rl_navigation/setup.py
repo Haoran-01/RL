@@ -31,6 +31,8 @@ setup(
             'train_ddqn = rl_navigation.train_ddqn:train_ddqn', 
             'scan_sanitizer = rl_navigation.scan_sanitizer:main',
             'cmd_guard = rl_navigation.cmd_guard:main',
+            # 'cmd_vel_throttle = rl_navigation.cmd_vel_throttle:main',
+            # 'odom_throttle = rl_navigation.odom_throttle:main'
         ],
     },
 )
