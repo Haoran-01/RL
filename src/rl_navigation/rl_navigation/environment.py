@@ -3,24 +3,18 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-
 from std_srvs.srv import Empty
 from gazebo_msgs.srv import SetEntityState
 from gazebo_msgs.msg import EntityState
-
-from std_msgs.msg import UInt32, Int32MultiArray
-
+from std_msgs.msg import UInt32  # <-- NEW: subscribe violation_count
 import numpy as np
-import math, time
+import math
+import time
 from collections import deque
 
-
-# ========== 可调：转弯是否改为“原地转” ==========
-TURN_IN_PLACE = True  # True：vx=0, wz大；False：原来的“边走边拐”
 
 class GazeboEnvironment(Node):
     def __init__(self, node_name='rl_env'):
@@ -29,27 +23,19 @@ class GazeboEnvironment(Node):
         # ------- ROS IO -------
         # 学术对照：将原始动作发到 /cmd_vel_raw，由 monitor/cmd_guard 再转发到 /cmd_vel
         self.vel_pub = self.create_publisher(Twist, '/cmd_vel_raw', 10)
-
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
 
-        # 监控累计违规（可用于统计/对照）
+        # <-- NEW: 订阅 ROSMonitoring/cmd_guard 报告的累计违规次数
         self.violation_count = 0
+        self.prev_violation_count = 0
         self.create_subscription(UInt32, '/monitor_rl/violation_count', self.violation_cb, 10)
-
-        # 步级握手：env→guard
-        self.step_start_pub = self.create_publisher(UInt32, '/monitor_guard/step_start', 10)
-        # 步级握手：guard→env
-        self.step_ack_sub   = self.create_subscription(Int32MultiArray, '/monitor_guard/step_ack', self._on_step_ack, 10)
-        self.sync_step_id = 0
-        self._last_ack = {'id': -1, 'violated': 0}
 
         # ------- State -------
         self.position = None
         self.orientation = None
         self.min_distance = float('inf')
         self.scan_state = np.array([3.5] * 10, dtype=float)
-
         self.goal = (3.0, 0.0)  # 终点
         self.prev_distance = None
         self.max_steps = 1000
@@ -70,6 +56,7 @@ class GazeboEnvironment(Node):
         self.set_state_client = self.create_client(SetEntityState, '/gazebo/set_entity_state')
         self.reset_client = self.create_client(Empty, '/reset_simulation')
 
+
         # use_sim_time
         try:
             if not self.has_parameter("use_sim_time"):
@@ -86,13 +73,6 @@ class GazeboEnvironment(Node):
     # ===================== Callbacks =====================
     def violation_cb(self, msg: UInt32):
         self.violation_count = int(msg.data)
-
-    def _on_step_ack(self, msg: Int32MultiArray):
-        try:
-            sid, violated = int(msg.data[0]), int(msg.data[1])
-            self._last_ack = {'id': sid, 'violated': violated}
-        except Exception:
-            pass
 
     def odom_callback(self, msg):
         self.position = msg.pose.pose.position
@@ -130,15 +110,13 @@ class GazeboEnvironment(Node):
         dy = self.goal[1] - self.position.y
         return math.hypot(dx, dy)
 
-    def _sim_time(self) -> float:
-        return self.get_clock().now().nanoseconds * 1e-9
-
     # ===================== Reset =====================
     def reset(self):
-        # 先发几帧零速，消除残留控制/动力学
+
         for _ in range(5):
             self.vel_pub.publish(Twist())
             rclpy.spin_once(self, timeout_sec=0.01)
+
 
         # Reset sim
         self.get_logger().info('Resetting the Gazebo world...')
@@ -160,24 +138,9 @@ class GazeboEnvironment(Node):
         state.pose.orientation.w = 1.0
         req = SetEntityState.Request(); req.state = state
 
-        ok = False
-        for _ in range(5):
-            if self.set_state_client.wait_for_service(timeout_sec=1.0):
-                fut2 = self.set_state_client.call_async(req)
-                rclpy.spin_until_future_complete(self, fut2, timeout_sec=1.0)
-            # 等 /odom 刷新
-            t_end = self._sim_time() + 0.4
-            while self._sim_time() < t_end:
-                rclpy.spin_once(self, timeout_sec=0.01)
-
-            if (self.position is not None and
-                abs(self.position.x + 3.0) < 0.1 and
-                abs(self.position.y - 0.0) < 0.1):
-                ok = True
-                break
-
-        if not ok:
-            self.get_logger().warn("SetEntityState not fully settled; continue best-effort")
+        if self.set_state_client.wait_for_service(timeout_sec=1.0):
+            future2 = self.set_state_client.call_async(req)
+            rclpy.spin_until_future_complete(self, future2)
 
         # Clear internal states
         self.position = None
@@ -200,10 +163,18 @@ class GazeboEnvironment(Node):
         while rclpy.ok() and (self.position is None or self.orientation is None or self.min_distance == float('inf')):
             rclpy.spin_once(self, timeout_sec=0.05)
         self.get_logger().info('Initial sensor data received.')
+
+        # Snapshot violation counter at episode start
+        self.prev_violation_count = self.violation_count
+
+        d0 = self.compute_distance_to_goal()
+        if d0 < 0.3:
+            self.get_logger().warn(f"Spawned too close to goal! Distance={d0:.2f}")
+
         return self.get_observation()
 
     # ===================== Low-level stepping =====================
-    def base_step(self, linear, angular, duration_sim=0.20, control_hz=40):
+    def base_step(self, linear, angular, duration_sim=0.25, control_hz=40):
         cmd = Twist()
         cmd.linear.x = float(linear)
         cmd.angular.z = float(angular)
@@ -218,7 +189,7 @@ class GazeboEnvironment(Node):
 
     # ===================== Reward =====================
     def compute_reward(self, action, prev_action=None):
-        # --- 进度/朝向/安全 ---（沿用你当前 shaping）
+        # --- 进度/朝向/安全 ---（完全沿用你原始 shaping）
         cur_dist = self.compute_distance_to_goal()
         if self.prev_distance is None:
             self.prev_distance = cur_dist
@@ -355,20 +326,12 @@ class GazeboEnvironment(Node):
 class NoMonitoringEnv(GazeboEnvironment):
     def step(self, action):
         """0=forward, 1=left, 2=right"""
-        if TURN_IN_PLACE:
-            if action == 0:
-                self.base_step(0.25, 0.0, duration_sim=0.20, control_hz=40)
-            elif action == 1:
-                self.base_step(0.0,  0.90, duration_sim=0.20, control_hz=40)
-            elif action == 2:
-                self.base_step(0.0, -0.90, duration_sim=0.20, control_hz=40)
-        else:
-            if action == 0:
-                self.base_step(0.25, 0.0, duration_sim=0.20, control_hz=40)
-            elif action == 1:
-                self.base_step(0.15, 0.55, duration_sim=0.18, control_hz=40)
-            elif action == 2:
-                self.base_step(0.15, -0.55, duration_sim=0.18, control_hz=40)
+        if action == 0:
+            self.base_step(0.25, 0.0, duration_sim=0.20, control_hz=40)
+        elif action == 1:
+            self.base_step(0.15, 0.55, duration_sim=0.18, control_hz=40)
+        elif action == 2:
+            self.base_step(0.15, -0.55, duration_sim=0.18, control_hz=40)
 
         self.step_count += 1
         reward, done = self.compute_reward(action)
@@ -397,63 +360,68 @@ class PassiveMonitoringEnv(GazeboEnvironment):
 
 class ActiveMonitoringEnv(GazeboEnvironment):
     """
-    “Active+Penalty”：
-    - 动作仍由 ROSMonitoring/cmd_guard 拦截；
-    - 这里用 step 握手对齐“当步违规”，在 reward 中加入惩罚。
-    - 可选：在前方过近时做软替换（与论文设置一致），但硬拦截仍交给监控。
+    推荐用于“Active+Penalty”实验：动作仍由 ROSMonitoring/cmd_guard 拦截，
+    这里额外在 reward 中加入“监控增量违规”的惩罚，以对齐外部拦截的学习信号。
+    可选：在前方过近时对“直行”做轻微替换（与论文常见设置一致），但真正的硬拦截仍交给监控。
     """
-    VIOLATION_PENALTY = 15.0   # 每次违规惩罚强度
-    USE_SOFT_OVERRIDE = False
-    ACK_TIMEOUT = 0.35         # 等待 cmd_guard 回执的超时（≥ 单步 duration）
-
-    def _wait_ack(self, step_id, timeout):
-        t0 = self._sim_time()
-        while (self._sim_time() - t0) < timeout:
-            rclpy.spin_once(self, timeout_sec=0.01)
-            if self._last_ack.get('id') == step_id:
-                return int(self._last_ack.get('violated', 0))
-        # 超时：按未违规处理，避免训练阻塞
-        self.get_logger().warn(f'ack timeout for step {step_id}, treat as non-violation')
-        return 0
+    VIOLATION_PENALTY = 2.0   # 每条新违规的惩罚强度，可调参
+    USE_SOFT_OVERRIDE = False   # 可切换是否在环境侧做软替换
 
     def step(self, action):
-        # （可选）软替换：仅在前方过近时把直行替换成转向；真正硬拦截交给监控
+        # （可选）软替换：仅在前方过近时把直行替换成随机转向；真正的安全兜底靠监控
         if self.USE_SOFT_OVERRIDE:
             front = float(self.scan_state[len(self.scan_state) // 2])
             if action == 0 and front < 0.35:
                 self.get_logger().warn("ActiveMonitor(Env): block forward -> soft turn")
                 action = 1 if np.random.rand() < 0.5 else 2
 
-        # 1) 本步 id 并广播 step_start
-        self.sync_step_id += 1
-        self.step_start_pub.publish(UInt32(data=self.sync_step_id))
+        # 记录监控计数（步前）
+        v_before = self.violation_count
 
-        # 2) 执行动作
-        if TURN_IN_PLACE:
-            if action == 0:
-                self.base_step(0.25, 0.0, duration_sim=0.20, control_hz=40)
-            elif action == 1:
-                self.base_step(0.0,  0.90, duration_sim=0.20, control_hz=40)
-            elif action == 2:
-                self.base_step(0.0, -0.90, duration_sim=0.20, control_hz=40)
-        else:
-            if action == 0:
-                self.base_step(0.25, 0.0, duration_sim=0.20, control_hz=40)
-            elif action == 1:
-                self.base_step(0.15, 0.55, duration_sim=0.18, control_hz=40)
-            elif action == 2:
-                self.base_step(0.15, -0.55, duration_sim=0.18, control_hz=40)
+        # 执行动作（动作发往 /cmd_vel_raw；若监控判为不安全，将在中间被 cmd_guard 刹停）
+        if action == 0:
+            self.base_step(0.25, 0.0, duration_sim=0.20, control_hz=40)
+        elif action == 1:
+            self.base_step(0.0, 0.9, duration_sim=0.18, control_hz=40)
+        elif action == 2:
+            self.base_step(0.0, -0.9, duration_sim=0.18, control_hz=40)
 
         self.step_count += 1
 
-        # 3) 等待匹配 id 的 ack（对齐！！）
-        violated_this_step = self._wait_ack(self.sync_step_id, self.ACK_TIMEOUT)
-
-        # 4) 结算奖励
+        # 计算环境基础奖励
         reward, done = self.compute_reward(action)
-        if violated_this_step:
-            reward -= self.VIOLATION_PENALTY
-            self.get_logger().warn(f"Monitor penalty (aligned): step={self.sync_step_id} -> -{self.VIOLATION_PENALTY}")
+
+        # 追加“监控增量违规”惩罚
+
+        # 等待一个小窗口收齐 monitor 消息（用仿真时钟，不受 wall time 影响）
+        wait_until = self.get_clock().now().nanoseconds * 1e-9 + 0.05  # 50ms 仿真时间
+        v_after = self.violation_count
+        while v_after == v_before and (self.get_clock().now().nanoseconds * 1e-9) < wait_until:
+            rclpy.spin_once(self, timeout_sec=0.0)
+
+            # 再读一次
+            v_after = self.violation_count
+
+        # for _ in range(3):  # 多 spin 几次，给 verdict 机会传到
+        #     rclpy.spin_once(self, timeout_sec=0.02)
+        # v_after = self.violation_count
+
+        delta_v = max(0, int(v_after - v_before))
+        delta = 0
+
+        # 新回合头两步的溢出豁免（且环境并不危险）
+        front = float(self.scan_state[len(self.scan_state)//2])
+        if self.step_count <= 5 and delta_v > 0 and front > 0.6:
+            self.get_logger().info("Ignore spillover verdict at episode start")
+            delta_v = 0
+
+
+        if delta_v > 0:
+            penalty = self.VIOLATION_PENALTY * float(delta_v)
+            delta = 1
+            reward -= penalty
+            self.get_logger().warn(f"Monitor penalty: -{penalty:.1f} for {delta_v} new violation(s)")
+            
 
         obs = self.get_observation()
         info = {
@@ -464,7 +432,7 @@ class ActiveMonitoringEnv(GazeboEnvironment):
             "violation": bool(self.is_violation()),
             "success": bool(self.episode_success),
             "crashes_in_episode": int(self.episode_crashes),
-            "monitor_delta_v": int(violated_this_step),   # 严格对齐到“当步”
+            "monitor_delta_v": int(delta),   # <-- 关键监控指标，便于画图/统计
         }
         self.last_action = action
         return obs, reward, done, info

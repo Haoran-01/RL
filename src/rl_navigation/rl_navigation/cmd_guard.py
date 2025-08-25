@@ -5,16 +5,16 @@ import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from geometry_msgs.msg import Twist
+import time  # 保留，不再用于计时（仅备用）
 
 # ===== Monitor tunables =====
-MUTE_SEC  = 0.10   # 缩短静默，减小“被按住”的体感
+MUTE_SEC  = 0.20
 STALE_SEC = 0.80
 REPUB_HZ  = 10.0
 
-TURN_WZ_EARLY_UNMUTE = 0.25
-ERROR_COALESCE_S     = 0.12
+TURN_WZ_EARLY_UNMUTE = 0.35
+ERROR_COALESCE_S     = 0.10
 
-# 兼容 rosmonitoring_interfaces，不在就退到 std_msgs/String
 try:
     from rosmonitoring_interfaces.msg import MonitorError as ErrorMsg
     from rosmonitoring_interfaces.msg import MonitorVerdict as VerdictMsg
@@ -22,10 +22,11 @@ except Exception:
     from std_msgs.msg import String as ErrorMsg
     from std_msgs.msg import String as VerdictMsg
 
-from std_msgs.msg import UInt32, Int32MultiArray
+# === 新增：发布累计违规次数 ===
+from std_msgs.msg import UInt32  # <-- NEW
 
 class CmdGuard(Node):
-    """平时直通；监控报错时刹停并短静默；提供 step 握手确保当步对齐。"""
+    """平时直通；监控报错时仅刹停并短静默，不注入转向。使用仿真时钟。"""
     def __init__(self):
         super().__init__('cmd_guard_minimal')
 
@@ -39,52 +40,35 @@ class CmdGuard(Node):
 
         # 订阅/发布
         self.sub_cmd     = self.create_subscription(Twist, '/cmd_vel_raw', self.on_cmd, 10)
+        # self.sub_error   = self.create_subscription(ErrorMsg, '/monitor_rl/monitor_error', self.on_error, 10)
         self.sub_verdict = self.create_subscription(VerdictMsg, '/monitor_rl/monitor_verdict', self.on_verdict, 10)
-
         self.pub_out     = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.pub_violation_count = self.create_publisher(UInt32, '/monitor_rl/violation_count', 10)
 
-        # 步级握手：env→guard
-        self.sub_step_start = self.create_subscription(UInt32, '/monitor_guard/step_start', self.on_step_start, 10)
-        # 步级握手：guard→env
-        self.pub_step_ack   = self.create_publisher(Int32MultiArray, '/monitor_guard/step_ack', 10)
+        # === 新增：违规计数发布器 ===
+        self.pub_violation_count = self.create_publisher(UInt32, '/monitor_rl/violation_count', 10)  # <-- NEW
 
         # 状态
         self.last_cmd_time = 0.0
         self.mute_until    = 0.0
-        self.last_error_ts = -1e9
-        self.violation_count = 0
+        # __init__ 里
+        self.last_error_ts = -1e9  # 确保第一条 error 不会被去抖吞掉
 
-        # step 窗口
-        self.cur_step_id = None
-        self.step_already_acked = False
-        self.step_window_sec = 0.30  # 观测窗口（应 ≥ 单步动作时长）
-
-        # 用定时器实现“到时自动 ack=0”
-        self._timer_handle = None
+        self.violation_count = 0  # <-- NEW: 累计违规计数
 
         self.timer = self.create_timer(1.0 / REPUB_HZ, self.tick)
-        self.get_logger().info('cmd_guard(minimal): pass-through + brake-on-error + step-ack (sim time)')
 
-    # --- 工具 ---
+        self.get_logger().info('cmd_guard(minimal): pass-through + brake-on-error (sim time)')
+        
+
     def _now(self) -> float:
+        """仿真时钟（秒）。"""
         return self.get_clock().now().nanoseconds * 1e-9
 
-    def _ack(self, violated: int):
-        """发布与当前 step 绑定的 ack，一步只发一次。"""
-        if self.cur_step_id is None or self.step_already_acked:
-            return
-        ack = Int32MultiArray()
-        ack.data = [int(self.cur_step_id), int(violated)]
-        self.pub_step_ack.publish(ack)
-        self.step_already_acked = True
-
-    # --- 回调 ---
     def on_cmd(self, msg: Twist):
         now = self._now()
         self.last_cmd_time = now
 
-        # 静默期若收到“明确转向”则提前解除静默
+        # 静默期若收到“明确转向”命令则提前解除静默并转发
         if now < self.mute_until:
             if abs(getattr(msg.angular, "z", 0.0)) >= TURN_WZ_EARLY_UNMUTE:
                 self.mute_until = now
@@ -94,10 +78,31 @@ class CmdGuard(Node):
         # 正常直通
         self.pub_out.publish(msg)
 
+    def on_error(self, _msg):
+        now = self._now()
+
+        # 合并极密集的 error（去抖）
+        if (now - self.last_error_ts) < ERROR_COALESCE_S:
+            return
+        self.last_error_ts = now
+
+        # === 新增：计数 + 发布 ===
+        self.violation_count += 1
+        self.pub_violation_count.publish(UInt32(data=self.violation_count))
+        self.get_logger().warn(f'monitor_error → BRAKE & mute (violations={self.violation_count})')
+
+        # 刹停 + 短静默
+        self.pub_out.publish(Twist())
+        self.mute_until = now + MUTE_SEC
+
     def on_verdict(self, msg):
+        # 1) 取出 verdict 字符串（兼容多类型/奇怪消息）
         verdict = getattr(msg, 'verdict', '') or getattr(msg, 'data', '') or str(msg)
         v = (verdict or '').strip().lower()
-        # 兼容 warning:2 的 "false" 与 warning:1 的 "currently_false"
+        if v:
+            self.get_logger().info(f'verdict={v}')
+
+        # 2) 判断违规（兼容 warning:2 的 "false" 与 warning:1 的 "currently_false"）
         is_violation = (
             v == "false" or
             "currently_false" in v or
@@ -107,54 +112,16 @@ class CmdGuard(Node):
         if not is_violation:
             return
 
-        now = self._now()
-
-        # 去抖：极密集 error 合并
-        if (now - self.last_error_ts) < ERROR_COALESCE_S:
-            # 但仍给当步 ack（防止 env 等不到）
-            self._ack(1)
-            return
-        self.last_error_ts = now
-
-        # 计数 + 发布
+        # 3) 计数 + 发布（逐条计数，不去抖）
         self.violation_count += 1
         self.pub_violation_count.publish(UInt32(data=self.violation_count))
-        self.get_logger().warn(f'monitor_verdict FALSE → brake & mute (violations={self.violation_count})')
+        self.get_logger().warn(f'verdict FALSE → count={self.violation_count}')
 
-        # 刹停 + 短静默（若当前不在静默）
+        # 4) 刹停与短静默：仅当“当前不在静默期”时才执行一次，避免无限延长静默
+        now = self._now()
         if now >= self.mute_until:
-            self.pub_out.publish(Twist())
-            self.mute_until = now + MUTE_SEC
-
-        # 步级 ack：当前步判定违规
-        self._ack(1)
-
-    def on_step_start(self, msg: UInt32):
-        """收到 env 的新一步开始，打开一个观测窗口。如果窗口内未见违规，自动回 ack=0。"""
-        self.cur_step_id = int(msg.data)
-        self.step_already_acked = False
-
-        # 取消旧窗口
-        if self._timer_handle is not None:
-            try:
-                self._timer_handle.cancel()
-            except Exception:
-                pass
-            self._timer_handle = None
-
-        def timeout_ack():
-            # 到时仍未见违规 → ack=0
-            self._ack(0)
-            # 只触发一次
-            if self._timer_handle is not None:
-                try:
-                    self._timer_handle.cancel()
-                except Exception:
-                    pass
-                self._timer_handle = None
-
-        # 用 ROS 定时器（仿真时钟）实现“窗口到时”
-        self._timer_handle = self.create_timer(self.step_window_sec, timeout_ack)
+            self.pub_out.publish(Twist())          # 只发一次零速
+            self.mute_until = now + MUTE_SEC       # 开一个固定长度的静默窗
 
     def tick(self):
         # 定期兜底：太久没新命令就发零速
