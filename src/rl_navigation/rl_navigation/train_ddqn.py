@@ -22,17 +22,23 @@ def make_env(mode: str):
 
 def train_ddqn(episodes=1000, max_steps=1000, mode="none"):
     rclpy.init()
-    env = make_env(mode)
+    env = ActiveMonitoringEnv()
+
+    MODEL_PATH = "/home/haoran/RL/src/rl_navigation/rl_navigation/ddqn_model_final_v2.pth"
+
 
     agent = DDQNAgent(state_dim=13, action_dim=3)  # 3(pos+yaw)+10 beams
 
     # 可选：加载旧模型
-    if os.path.exists("ddqn_model_final_v2.pth"):
-        agent.load("ddqn_model_final_v2.pth")
+    if os.path.exists(MODEL_PATH):
+        agent.load(MODEL_PATH)
         agent.epsilon = 1.0
+        print("✅ Loaded pretrained model ddqn_model_final_v2.pth")
+    else:
+        print("❌ No pretrained model found, training from scratch")
 
     # epsilon 线性衰减
-    EPS_DECAY_EPISODES = 500
+    EPS_DECAY_EPISODES = 800
     EPS_START = 1.0
     EPS_END = agent.epsilon_min
 

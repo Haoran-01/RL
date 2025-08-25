@@ -40,7 +40,7 @@ class CmdGuard(Node):
 
         # 订阅/发布
         self.sub_cmd     = self.create_subscription(Twist, '/cmd_vel_raw', self.on_cmd, 10)
-        self.sub_error   = self.create_subscription(ErrorMsg, '/monitor_rl/monitor_error', self.on_error, 10)
+        # self.sub_error   = self.create_subscription(ErrorMsg, '/monitor_rl/monitor_error', self.on_error, 10)
         self.sub_verdict = self.create_subscription(VerdictMsg, '/monitor_rl/monitor_verdict', self.on_verdict, 10)
         self.pub_out     = self.create_publisher(Twist, '/cmd_vel', 10)
 
@@ -95,9 +95,32 @@ class CmdGuard(Node):
         self.mute_until = now + MUTE_SEC
 
     def on_verdict(self, msg):
+        # 1) 取出 verdict 字符串（兼容多类型/奇怪消息）
         verdict = getattr(msg, 'verdict', '') or getattr(msg, 'data', '') or str(msg)
-        if verdict:
-            self.get_logger().info(f'verdict={verdict}')
+        v = (verdict or '').strip().lower()
+        if v:
+            self.get_logger().info(f'verdict={v}')
+
+        # 2) 判断违规（兼容 warning:2 的 "false" 与 warning:1 的 "currently_false"）
+        is_violation = (
+            v == "false" or
+            "currently_false" in v or
+            "error" in v or
+            "violation" in v
+        )
+        if not is_violation:
+            return
+
+        # 3) 计数 + 发布（逐条计数，不去抖）
+        self.violation_count += 1
+        self.pub_violation_count.publish(UInt32(data=self.violation_count))
+        self.get_logger().warn(f'verdict FALSE → count={self.violation_count}')
+
+        # 4) 刹停与短静默：仅当“当前不在静默期”时才执行一次，避免无限延长静默
+        now = self._now()
+        if now >= self.mute_until:
+            self.pub_out.publish(Twist())          # 只发一次零速
+            self.mute_until = now + MUTE_SEC       # 开一个固定长度的静默窗
 
     def tick(self):
         # 定期兜底：太久没新命令就发零速

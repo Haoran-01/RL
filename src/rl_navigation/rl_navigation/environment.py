@@ -356,7 +356,7 @@ class ActiveMonitoringEnv(GazeboEnvironment):
     这里额外在 reward 中加入“监控增量违规”的惩罚，以对齐外部拦截的学习信号。
     可选：在前方过近时对“直行”做轻微替换（与论文常见设置一致），但真正的硬拦截仍交给监控。
     """
-    VIOLATION_PENALTY = 15.0   # 每条新违规的惩罚强度，可调参
+    VIOLATION_PENALTY = 2.0   # 每条新违规的惩罚强度，可调参
     USE_SOFT_OVERRIDE = True   # 可切换是否在环境侧做软替换
 
     def step(self, action):
@@ -386,7 +386,10 @@ class ActiveMonitoringEnv(GazeboEnvironment):
         # 追加“监控增量违规”惩罚
         rclpy.spin_once(self, timeout_sec=0.0)  # 拉一下回调，尽量读到最新违规数
         v_after = self.violation_count
-        delta_v = max(0, int(v_after - v_before))
+        # delta_v = max(0, int(v_after - v_before))
+        delta_v = 1 if v_after > v_before else 0
+
+
         if delta_v > 0:
             penalty = self.VIOLATION_PENALTY * float(delta_v)
             reward -= penalty
