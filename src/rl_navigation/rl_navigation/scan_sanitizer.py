@@ -13,7 +13,7 @@ class ScanSanitizer(Node):
         self.pub_front  = self.create_publisher(Float32, '/scan_front_min', 10)    # 前方扇区最小（新增）
 
         # 参数：前方扇区半角（弧度），默认 25°
-        self.front_half_angle = math.radians(25.0)
+        self.front_half_angle = math.radians(35.0)
 
     def cb(self, msg: LaserScan):
         rng_max = msg.range_max if msg.range_max and math.isfinite(msg.range_max) else 10.0
