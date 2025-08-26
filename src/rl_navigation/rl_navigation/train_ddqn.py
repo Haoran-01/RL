@@ -38,7 +38,7 @@ def train_ddqn(episodes=1000, max_steps=1000, mode="none"):
         print("❌ No pretrained model found, training from scratch")
 
     # epsilon 线性衰减
-    EPS_DECAY_EPISODES = 800
+    EPS_DECAY_EPISODES = 200
     EPS_START = 1.0
     EPS_END = agent.epsilon_min
 

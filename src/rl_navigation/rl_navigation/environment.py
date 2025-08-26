@@ -382,9 +382,9 @@ class ActiveMonitoringEnv(GazeboEnvironment):
         if action == 0:
             self.base_step(0.25, 0.0, duration_sim=0.20, control_hz=40)
         elif action == 1:
-            self.base_step(0.0, 0.9, duration_sim=0.18, control_hz=40)
+            self.base_step(0.15, 0.55, duration_sim=0.18, control_hz=40)
         elif action == 2:
-            self.base_step(0.0, -0.9, duration_sim=0.18, control_hz=40)
+            self.base_step(0.15, -0.55, duration_sim=0.18, control_hz=40)
 
         self.step_count += 1
 
